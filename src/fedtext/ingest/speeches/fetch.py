@@ -85,11 +85,12 @@ def _fetch_speech_text(session: requests.Session, link: str, year: int) -> str |
     return _clean(raw)
 
 
-def run(conn: sqlite3.Connection) -> None:
+def run(conn: sqlite3.Connection, limit: int | None = None) -> None:
     """Fetch and extract text for all unprocessed speeches."""
-    rows = conn.execute(
-        "SELECT id, link, speech_date FROM speeches WHERE processed = FALSE ORDER BY speech_date"
-    ).fetchall()
+    query = "SELECT id, link, speech_date FROM speeches WHERE processed = FALSE ORDER BY speech_date"
+    if limit:
+        query += f" LIMIT {limit}"
+    rows = conn.execute(query).fetchall()
 
     if not rows:
         logger.info("No unprocessed speeches found.")

@@ -29,6 +29,7 @@ def run(
     end_year: int | None = None,
     discovery_only: bool = False,
     fetch_only: bool = False,
+    limit: int | None = None,
 ) -> None:
     if end_year is None:
         end_year = datetime.now().year
@@ -42,7 +43,7 @@ def run(
 
     if not discovery_only:
         logger.info("=== FETCH ===")
-        fetch.run(conn)
+        fetch.run(conn, limit=limit)
 
     conn.close()
     logger.info("Done.")
@@ -56,6 +57,8 @@ def _parse_args() -> argparse.Namespace:
                    help="Only crawl listing pages; don't fetch speech text")
     p.add_argument("--fetch-only", action="store_true",
                    help="Only fetch text for already-discovered speeches")
+    p.add_argument("--limit", type=int, default=None,
+                   help="Max number of speeches to fetch (for testing)")
     return p.parse_args()
 
 
@@ -66,4 +69,5 @@ if __name__ == "__main__":
         end_year=args.end_year,
         discovery_only=args.discovery_only,
         fetch_only=args.fetch_only,
+        limit=args.limit,
     )

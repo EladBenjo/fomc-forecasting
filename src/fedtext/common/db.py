@@ -39,6 +39,21 @@ def init_documents_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_doc_category  ON documents(category);
         CREATE INDEX IF NOT EXISTS idx_doc_meeting   ON documents(meeting_date);
         CREATE INDEX IF NOT EXISTS idx_doc_fetched   ON documents(fetched);
+
+        CREATE TABLE IF NOT EXISTS chunks (
+            id          INTEGER PRIMARY KEY,
+            source_id   INTEGER NOT NULL,
+            source_type TEXT NOT NULL DEFAULT 'document',
+            doc_id      TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            chunk_text  TEXT NOT NULL,
+            token_est   INTEGER,
+            embedding   BLOB,
+            UNIQUE(source_type, source_id, chunk_index)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_chunk_doc    ON chunks(doc_id);
+        CREATE INDEX IF NOT EXISTS idx_chunk_source ON chunks(source_type, source_id);
     """)
     conn.commit()
 
@@ -60,5 +75,20 @@ def init_speeches_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_speech_date ON speeches(speech_date);
         CREATE INDEX IF NOT EXISTS idx_speaker     ON speeches(speaker);
         CREATE INDEX IF NOT EXISTS idx_processed   ON speeches(processed);
+
+        CREATE TABLE IF NOT EXISTS chunks (
+            id          INTEGER PRIMARY KEY,
+            source_id   INTEGER NOT NULL,
+            source_type TEXT NOT NULL DEFAULT 'speech',
+            doc_id      TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            chunk_text  TEXT NOT NULL,
+            token_est   INTEGER,
+            embedding   BLOB,
+            UNIQUE(source_type, source_id, chunk_index)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_chunk_doc    ON chunks(doc_id);
+        CREATE INDEX IF NOT EXISTS idx_chunk_source ON chunks(source_type, source_id);
     """)
     conn.commit()

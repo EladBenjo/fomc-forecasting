@@ -1,18 +1,21 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH          = Path(__file__).parents[3] / "data" / "catalog" / "speeches.db"
-DOCUMENTS_DB_PATH = Path(__file__).parents[3] / "data" / "catalog" / "catalog.sqlite"
+from fedtext.common.paths import SPEECHES_DB, DOCUMENTS_DB
+
+# Re-export for backwards compatibility
+DB_PATH           = SPEECHES_DB
+DOCUMENTS_DB_PATH = DOCUMENTS_DB
 
 
-def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
+def get_connection(db_path: Path = SPEECHES_DB) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def get_documents_connection(db_path: Path = DOCUMENTS_DB_PATH) -> sqlite3.Connection:
+def get_documents_connection(db_path: Path = DOCUMENTS_DB) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row

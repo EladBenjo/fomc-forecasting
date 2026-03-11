@@ -1,0 +1,21 @@
+speeches:
+  base_url: "https://www.federalreserve.gov"
+  url_format_old: "/newsevents/speech/{year}speech.htm"    # 1996–2010
+  url_format_new: "/newsevents/speech/{year}-speeches.htm" # 2011–present
+  old_format_until_year: 2010
+  crawl_delay_seconds: 1.5
+  request_timeout_seconds: 30
+  user_agent: "fedtext-scraper/1.0 (research)"
+
+documents:
+  base_url: "https://www.federalreserve.gov"
+  json_feeds:
+    - "/monetarypolicy/materials/assets/final-recent.json"
+    - "/monetarypolicy/materials/assets/final-hist.json"
+  default_categories:
+    - "St"   # Policy Statements
+    - "Mn"   # Minutes
+  # "PrC" (Press Conference transcripts) supported but not in default run
+  fetch_delay_seconds: 2.0
+  request_timeout_seconds: 30
+  user_agent: "fedtext-scraper/1.0 (research)"

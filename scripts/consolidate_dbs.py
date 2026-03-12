@@ -37,13 +37,19 @@ def _migrate(dry_run: bool = False) -> None:
     if dry_run:
         print("[dry-run] No data will be written.\n")
 
+    def _count(conn: sqlite3.Connection, table: str) -> int:
+        try:
+            return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        except sqlite3.OperationalError:
+            return 0  # table doesn't exist in this legacy DB
+
     # Count source rows
     sp_conn  = sqlite3.connect(SPEECHES_DB)
     doc_conn = sqlite3.connect(DOCUMENTS_DB)
-    n_speeches  = sp_conn.execute("SELECT COUNT(*) FROM speeches").fetchone()[0]
-    n_documents = doc_conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
-    n_sp_chunks  = sp_conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-    n_doc_chunks = doc_conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+    n_speeches   = _count(sp_conn,  "speeches")
+    n_documents  = _count(doc_conn, "documents")
+    n_sp_chunks  = _count(sp_conn,  "chunks")
+    n_doc_chunks = _count(doc_conn, "chunks")
     sp_conn.close()
     doc_conn.close()
 
@@ -63,10 +69,16 @@ def _migrate(dry_run: bool = False) -> None:
     conn.execute(f"ATTACH DATABASE '{SPEECHES_DB}' AS src_sp")
     conn.execute(f"ATTACH DATABASE '{DOCUMENTS_DB}' AS src_doc")
 
-    conn.execute("INSERT OR IGNORE INTO speeches SELECT * FROM src_sp.speeches")
-    conn.execute("INSERT OR IGNORE INTO documents SELECT * FROM src_doc.documents")
-    conn.execute("INSERT OR IGNORE INTO chunks    SELECT * FROM src_sp.chunks")
-    conn.execute("INSERT OR IGNORE INTO chunks    SELECT * FROM src_doc.chunks")
+    def _safe_insert(sql: str) -> None:
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # source table didn't exist in legacy DB
+
+    _safe_insert("INSERT OR IGNORE INTO speeches SELECT * FROM src_sp.speeches")
+    _safe_insert("INSERT OR IGNORE INTO documents SELECT * FROM src_doc.documents")
+    _safe_insert("INSERT OR IGNORE INTO chunks    SELECT * FROM src_sp.chunks")
+    _safe_insert("INSERT OR IGNORE INTO chunks    SELECT * FROM src_doc.chunks")
 
     conn.commit()
     conn.execute("DETACH DATABASE src_sp")

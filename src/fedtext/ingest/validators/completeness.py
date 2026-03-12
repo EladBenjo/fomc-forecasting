@@ -17,7 +17,7 @@ import sqlite3
 import sys
 from dataclasses import dataclass, field
 
-from fedtext.common.db import get_connection, get_documents_connection
+from fedtext.common.db import get_connection
 
 logger = logging.getLogger(__name__)
 
@@ -126,18 +126,18 @@ def _check_speeches(conn: sqlite3.Connection) -> list[Issue]:
 # ---------------------------------------------------------------------------
 
 def validate_documents() -> ValidationReport:
-    """Run completeness checks on the documents DB."""
-    conn = get_documents_connection()
-    report = ValidationReport(db_label="documents (catalog.sqlite)")
+    """Run completeness checks on the documents table."""
+    conn = get_connection()
+    report = ValidationReport(db_label="documents (fedtext.db)")
     report.issues = _check_documents(conn)
     conn.close()
     return report
 
 
 def validate_speeches() -> ValidationReport:
-    """Run completeness checks on the speeches DB."""
+    """Run completeness checks on the speeches table."""
     conn = get_connection()
-    report = ValidationReport(db_label="speeches (speeches.db)")
+    report = ValidationReport(db_label="speeches (fedtext.db)")
     report.issues = _check_speeches(conn)
     conn.close()
     return report

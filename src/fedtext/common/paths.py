@@ -16,6 +16,9 @@ TARGETS_DIR  = DATA_DIR / "targets"
 SPLITS_DIR   = DATA_DIR / "splits"
 RAW_DIR      = DATA_DIR / "raw"
 
+FEDTEXT_DB   = CATALOG_DIR / "fedtext.db"
+
+# Legacy paths — kept for reference during migration only
 SPEECHES_DB  = CATALOG_DIR / "speeches.db"
 DOCUMENTS_DB = CATALOG_DIR / "catalog.sqlite"
 

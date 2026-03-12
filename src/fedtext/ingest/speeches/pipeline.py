@@ -13,7 +13,7 @@ import logging
 import sys
 from datetime import datetime
 
-from fedtext.common.db import get_connection, init_speeches_db
+from fedtext.common.db import get_connection, init_db
 from fedtext.ingest.speeches import discovery, fetch
 
 logging.basicConfig(
@@ -35,7 +35,7 @@ def run(
         end_year = datetime.now().year
 
     conn = get_connection()
-    init_speeches_db(conn)
+    init_db(conn)
 
     if not fetch_only:
         logger.info("=== DISCOVERY  %d – %d ===", start_year, end_year)

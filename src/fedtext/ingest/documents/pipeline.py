@@ -14,7 +14,7 @@ import argparse
 import logging
 import sys
 
-from fedtext.common.db import get_documents_connection, init_documents_db
+from fedtext.common.db import get_connection, init_db
 from fedtext.ingest.documents.discovery import crawler
 from fedtext.ingest.documents.fetch import downloader
 from fedtext.ingest.documents.parse import parser
@@ -34,8 +34,8 @@ def run(
     parse_only: bool = False,
     limit: int | None = None,
 ) -> None:
-    conn = get_documents_connection()
-    init_documents_db(conn)
+    conn = get_connection()
+    init_db(conn)
 
     if not fetch_only and not parse_only:
         logger.info("=== DISCOVERY  categories=%s ===", categories)

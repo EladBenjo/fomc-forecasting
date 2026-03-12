@@ -54,6 +54,41 @@ data/catalog/fedtext.db          ← unified SQLite (speeches + documents + chun
 
 ---
 
+## Feature engineering
+
+### Sentiment — FOMC-RoBERTa
+
+**Why sentence-level, not document-level:** The model has a 512-token limit. A typical Fed
+speech is 5,000+ tokens. Passing a full document would silently truncate after the first few
+paragraphs and score only the opening, discarding most of the signal.
+
+**Why economic keyword pre-filtering:** ~80% of sentences in Fed documents are procedural
+boilerplate ("The meeting was adjourned", "The vote was unanimous", footnotes). Filtering to
+sentences that mention inflation, interest rates, labor market, or financial stability terms
+cuts inference time ~5× and removes noise from the aggregate score.
+
+**Score formula:** `(n_hawkish − n_dovish) / n_target_sentences ∈ [−1, 1]`
+Labels: `LABEL_0` = Dovish, `LABEL_1` = Hawkish, `LABEL_2` = Neutral.
+
+### Novelty — TF-IDF cosine distance
+
+**Why TF-IDF, not embeddings:** We want lexical novelty — new vocabulary and new policy
+phrases — not semantic similarity. Embedding-based cosine similarity would score a paraphrased
+statement as nearly identical to the original even when new terminology was introduced. That
+vocabulary shift is exactly the signal we want to capture.
+
+**Computed per source type:** Each statement is compared to the previous statement; each speech
+to the previous speech. Cross-type comparison (statement vs. speech) would be noise.
+
+### Topics — intentionally omitted
+
+The research notebook implemented both rule-based (keyword counting) and zero-shot
+(BART-large-MNLI) topic classification. Both approaches produced poor class separation across
+meetings, and topic features were excluded from the final model as a result. This is documented
+here rather than silently absent.
+
+---
+
 ## Current status
 
 | Phase | Description | Status |

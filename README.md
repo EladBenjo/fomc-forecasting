@@ -95,8 +95,8 @@ here rather than silently absent.
 | ----- | ----------- | ------ |
 | 1 | Ingest hardening (versioned migrations, validators, YAML config) | done |
 | 1.5 | DB consolidation (`speeches.db` + `catalog.sqlite` → `fedtext.db`) | done |
-| 2 | Feature engineering (sentiment, novelty, topics) | next |
-| 3 | Target variable + dataset builder (FRED) | — |
+| 2 | Feature engineering (sentiment, novelty, topics) | done |
+| 3 | Target variable + dataset builder (FRED) | next |
 | 4 | Baseline models (AR, SARIMAX) | — |
 | 5 | ML models (XGBoost) | — |
 | 6 | RAG layer (sentence-transformers + sqlite-vec) | — |

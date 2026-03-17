@@ -46,7 +46,7 @@ queries, cleaner portfolio story.
 **Goal:** Compute document-level text features and store them for modeling.
 
 - `text/cleaning/normalizer.py` — lowercasing, whitespace, boilerplate removal
-- `text/features/sentiment.py` — hawkish/dovish scores (VADER → ROBER-FOMC)
+- `text/features/sentiment.py` — hawkish/dovish scores (VADER → RoBERTa-FOMC)
 - `text/features/novelty.py` — cosine distance vs. previous meeting
 - `text/features/topics.py` — LDA topic distribution
 - Output: `data/features/doc_level/` as parquet

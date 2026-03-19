@@ -2,12 +2,11 @@
 Feature engineering pipeline entry point.
 
 Reads parsed text from fedtext.db, computes sentiment + novelty, and writes
-one parquet file per source_type to data/features/doc_level/.
+a parquet file to data/features/doc_level/features.parquet.
 
 Usage:
     python -m fedtext.text.features.pipeline
     python -m fedtext.text.features.pipeline --source-types speeches documents
-    python -m fedtext.text.features.pipeline --device 0   # use GPU
     python -m fedtext.text.features.pipeline --limit 50   # for testing
 """
 
@@ -16,7 +15,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from pathlib import Path
 
 import pandas as pd
 
@@ -45,8 +43,8 @@ def _load_speeches(conn, limit: int | None) -> list[dict]:
         SELECT
             id          AS doc_id,
             'speech'    AS source_type,
-            date,
-            text
+            speech_date AS date,
+            speech_text AS text
         FROM speeches
         WHERE text IS NOT NULL AND text != ''
         ORDER BY date
@@ -63,7 +61,7 @@ def _load_documents(conn, limit: int | None) -> list[dict]:
             id              AS doc_id,
             'document'      AS source_type,
             meeting_date    AS date,
-            text
+            doc_text        AS text
         FROM documents
         WHERE text IS NOT NULL AND text != ''
         ORDER BY meeting_date
@@ -80,7 +78,6 @@ def _load_documents(conn, limit: int | None) -> list[dict]:
 
 def run(
     source_types: list[str] | None = None,
-    device: int = -1,
     limit: int | None = None,
 ) -> None:
     if source_types is None:
@@ -101,16 +98,16 @@ def run(
     conn.close()
 
     if not records:
-        logger.warning("No records found — nothing to do.")
+        logger.warning("No records found; nothing to do.")
         return
 
-    # --- Novelty (cheap — no model needed) ---
+    # Novelty
     logger.info("Computing novelty scores...")
     novelty_map = novelty_mod.compute_novelty_by_type(records)
 
-    # --- Sentiment (expensive — load model once) ---
-    logger.info("Loading sentiment model...")
-    pipe = sentiment_mod.load_pipeline(device=device)
+    # Sentiment
+    logger.info("Initializing sentiment client...")
+    client = sentiment_mod.load_client()
 
     rows = []
     for i, rec in enumerate(records):
@@ -119,18 +116,18 @@ def run(
 
         text = normalize(rec["text"])
         sents = split_sentences(text)
-        result = sentiment_mod.score_document(text, sents, pipeline=pipe)
+        result = sentiment_mod.score_document(text, sents, client=client)
 
         rows.append({
-            "doc_id":             rec["doc_id"],
-            "source_type":        rec["source_type"],
-            "date":               rec["date"],
-            "hawkish_score":      result.hawkish_score,
-            "n_hawkish":          result.n_hawkish,
-            "n_dovish":           result.n_dovish,
-            "n_neutral":          result.n_neutral,
+            "doc_id": rec["doc_id"],
+            "source_type": rec["source_type"],
+            "date": rec["date"],
+            "hawkish_score": result.hawkish_score,
+            "n_hawkish": result.n_hawkish,
+            "n_dovish": result.n_dovish,
+            "n_neutral": result.n_neutral,
             "n_target_sentences": result.n_target_sentences,
-            "novelty":            novelty_map.get(rec["doc_id"], float("nan")),
+            "novelty": novelty_map.get(rec["doc_id"], float("nan")),
         })
 
     df = pd.DataFrame(rows)
@@ -138,7 +135,7 @@ def run(
     _OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = _OUT_DIR / "features.parquet"
     df.to_parquet(out_path, index=False)
-    logger.info("Wrote %d rows → %s", len(df), out_path)
+    logger.info("Wrote %d rows to %s", len(df), out_path)
 
 
 # ---------------------------------------------------------------------------
@@ -154,10 +151,6 @@ def _parse_args() -> argparse.Namespace:
         help="Which tables to process (default: both)",
     )
     p.add_argument(
-        "--device", type=int, default=-1,
-        help="Torch device: -1=CPU, 0=first GPU (default: -1)",
-    )
-    p.add_argument(
         "--limit", type=int, default=None,
         help="Max documents per source type (for testing)",
     )
@@ -168,6 +161,5 @@ if __name__ == "__main__":
     args = _parse_args()
     run(
         source_types=args.source_types,
-        device=args.device,
         limit=args.limit,
     )

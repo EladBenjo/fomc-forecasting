@@ -1,122 +1,163 @@
-"""
-Tests for fedtext.text.features.sentiment.
+"""Tests for fedtext.text.features.sentiment using mocked ZettaQuant API calls."""
 
-The FOMC-RoBERTa model is NOT loaded here — the HuggingFace pipeline is mocked.
-This keeps tests fast (<1s) and dependency-free (no transformers download needed).
+from __future__ import annotations
 
-Mock contract: pipeline(sentences, ...) returns a list of {"label": ..., "score": ...}
-dicts matching the real model's output format.
-"""
-
+import requests
 import pytest
-from unittest.mock import MagicMock
-from fedtext.text.features.sentiment import score_document, SentimentResult
+
+from fedtext.text.features import sentiment
+from fedtext.text.features.sentiment import SentimentResult, ZettaQuantClient, load_client, score_document
 
 
-def _make_pipeline(*labels: str):
-    """Return a mock pipeline that assigns labels in order to input sentences."""
-    def _pipeline(sentences, **kwargs):
-        return [{"label": lbl, "score": 0.99} for lbl in labels]
-    return _pipeline
+class _Resp:
+    def __init__(self, payload: dict, status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+    def json(self) -> dict:
+        return self._payload
 
 
 class TestScoreDocument:
-    # ------------------------------------------------------------------
-    # Score formula
-    # ------------------------------------------------------------------
+    def test_relevancy_filter_then_stance_counts(self):
+        calls: list[dict] = []
 
-    def test_all_hawkish_score_plus_one(self):
-        # 3 economic sentences, all hawkish → score = (3-0)/3 = 1.0
-        sentences = [
-            "Inflation expectations have risen significantly.",
-            "Interest rate hikes are necessary to restore price stability.",
-            "Monetary policy must remain restrictive.",
-        ]
-        pipe = _make_pipeline("LABEL_1", "LABEL_1", "LABEL_1")
-        result = score_document("", sentences, pipeline=pipe)
-        assert result.hawkish_score == pytest.approx(1.0)
-        assert result.n_hawkish == 3
-        assert result.n_dovish == 0
-        assert result.n_neutral == 0
+        def _post(url, headers, json, timeout):
+            calls.append(json)
+            if json["model_id"] == sentiment.ZQ_RELEVANCY_MODEL_ID:
+                # 3 inputs -> keep only first and third
+                return _Resp({
+                    "predictions": [
+                        {"label": "Relevant"},
+                        {"label": "Irrelevant"},
+                        {"label": "Relevant"},
+                    ]
+                })
+            return _Resp({
+                "predictions": [
+                    {"label": "Hawkish"},
+                    {"label": "Neutral"},
+                ]
+            })
 
-    def test_all_dovish_score_minus_one(self):
-        sentences = [
-            "Inflation expectations remain well-anchored.",
-            "Interest rates can remain accommodative.",
-            "Monetary policy supports employment growth.",
-        ]
-        pipe = _make_pipeline("LABEL_0", "LABEL_0", "LABEL_0")
-        result = score_document("", sentences, pipeline=pipe)
-        assert result.hawkish_score == pytest.approx(-1.0)
-        assert result.n_dovish == 3
+        client = ZettaQuantClient(api_key="k", batch_size=10, max_req_per_min=1_000_000)
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(sentiment.requests, "post", _post)
+            result = score_document(
+                "",
+                [
+                    "Inflation remains elevated above target.",
+                    "The meeting was adjourned.",
+                    "Policy should remain restrictive for longer.",
+                ],
+                client=client,
+            )
 
-    def test_mixed_score(self):
-        # 1 hawkish, 1 dovish, 1 neutral → score = (1-1)/3 = 0.0
-        sentences = [
-            "Inflation remains above target.",
-            "Labor market conditions are accommodative.",
-            "The committee is monitoring developments.",
-        ]
-        pipe = _make_pipeline("LABEL_1", "LABEL_0", "LABEL_2")
-        result = score_document("", sentences, pipeline=pipe)
-        assert result.hawkish_score == pytest.approx(0.0)
-        assert result.n_hawkish == 1
-        assert result.n_dovish == 1
-        assert result.n_neutral == 1
-
-    # ------------------------------------------------------------------
-    # Economic keyword filter
-    # ------------------------------------------------------------------
-
-    def test_boilerplate_filtered_out(self):
-        # None of these sentences mention economic keywords — pipeline never called
-        sentences = [
-            "The meeting was adjourned at 4:00 PM.",
-            "The vote was unanimous.",
-            "Attendance was noted for the record.",
-        ]
-        pipe = MagicMock()
-        result = score_document("", sentences, pipeline=pipe)
-        pipe.assert_not_called()
-        assert result.n_target_sentences == 0
-        assert result.hawkish_score == pytest.approx(0.0)
-
-    def test_economic_sentences_pass_filter(self):
-        sentences = [
-            "Inflation has remained above the 2 percent target.",  # "inflation" → passes
-            "The meeting was adjourned.",                          # boilerplate → filtered
-        ]
-        pipe = _make_pipeline("LABEL_1")  # only 1 call expected
-        result = score_document("", sentences, pipeline=pipe)
-        assert result.n_target_sentences == 1
-
-    def test_interest_rate_keyword_passes(self):
-        sentences = ["Interest rate decisions depend on incoming data."]
-        pipe = _make_pipeline("LABEL_2")
-        result = score_document("", sentences, pipeline=pipe)
-        assert result.n_target_sentences == 1
-
-    # ------------------------------------------------------------------
-    # Edge cases
-    # ------------------------------------------------------------------
-
-    def test_no_sentences_returns_neutral(self):
-        result = score_document("", [], pipeline=MagicMock())
-        assert result.hawkish_score == pytest.approx(0.0)
-        assert result.n_target_sentences == 0
-
-    def test_result_type(self):
-        sentences = ["Inflation expectations are well-anchored."]
-        pipe = _make_pipeline("LABEL_2")
-        result = score_document("", sentences, pipeline=pipe)
         assert isinstance(result, SentimentResult)
+        assert result.n_hawkish == 1
+        assert result.n_dovish == 0
+        assert result.n_neutral == 1
+        assert result.n_target_sentences == 2
+        assert result.hawkish_score == pytest.approx(0.5)
+        assert len(calls) == 2
 
-    def test_score_in_valid_range(self):
-        sentences = [
-            "Inflation remains elevated above target.",
-            "Interest rates must rise to restore price stability.",
-            "Labor market is strong but wage growth is moderate.",
-        ]
-        pipe = _make_pipeline("LABEL_1", "LABEL_1", "LABEL_0")
-        result = score_document("", sentences, pipeline=pipe)
-        assert -1.0 <= result.hawkish_score <= 1.0
+    def test_stance_irrelevant_is_excluded_from_target_count(self):
+        def _post(url, headers, json, timeout):
+            if json["model_id"] == sentiment.ZQ_RELEVANCY_MODEL_ID:
+                return _Resp({"predictions": [{"label": "Relevant"}, {"label": "Relevant"}]})
+            return _Resp({"predictions": [{"label": "Hawkish"}, {"label": "Irrelevant"}]})
+
+        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000)
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(sentiment.requests, "post", _post)
+            result = score_document(
+                "",
+                [
+                    "Inflation is above target and broadening.",
+                    "The vote was unanimous and procedural.",
+                ],
+                client=client,
+            )
+
+        assert result.n_hawkish == 1
+        assert result.n_target_sentences == 1
+        assert result.hawkish_score == pytest.approx(1.0)
+
+    def test_no_relevant_sentences_returns_neutral(self):
+        def _post(url, headers, json, timeout):
+            return _Resp({"predictions": [{"label": "Irrelevant"}] * len(json["instances"])})
+
+        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000)
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(sentiment.requests, "post", _post)
+            result = score_document("", ["This is long enough sentence."], client=client)
+
+        assert result.n_target_sentences == 0
+        assert result.hawkish_score == pytest.approx(0.0)
+
+
+class TestZettaQuantClient:
+    def test_batches_instances(self):
+        seen_sizes: list[int] = []
+
+        def _post(url, headers, json, timeout):
+            seen_sizes.append(len(json["instances"]))
+            return _Resp({"predictions": [{"label": "Relevant"}] * len(json["instances"])})
+
+        client = ZettaQuantClient(api_key="k", batch_size=2, max_req_per_min=1_000_000)
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(sentiment.requests, "post", _post)
+            labels = client.classify_relevancy([
+                "Sentence one long enough.",
+                "Sentence two long enough.",
+                "Sentence three long enough.",
+                "Sentence four long enough.",
+                "Sentence five long enough.",
+            ])
+
+        assert seen_sizes == [2, 2, 1]
+        assert labels == ["Relevant"] * 5
+
+    def test_raises_on_http_error(self):
+        def _post(url, headers, json, timeout):
+            return _Resp({"predictions": []}, status_code=429)
+
+        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000)
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(sentiment.requests, "post", _post)
+            with pytest.raises(requests.HTTPError):
+                client.classify_relevancy(["This sentence is long enough."])
+
+    def test_raises_on_malformed_response(self):
+        def _post(url, headers, json, timeout):
+            return _Resp({"predictions": "not-a-list"})
+
+        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000)
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(sentiment.requests, "post", _post)
+            with pytest.raises(ValueError, match="predictions"):
+                client.classify_relevancy(["This sentence is long enough."])
+
+
+class TestLoadClient:
+    def test_load_client_requires_api_key(self):
+        with pytest.MonkeyPatch.context() as m:
+            m.delenv("ZQ_API_KEY", raising=False)
+            with pytest.raises(RuntimeError, match="ZQ_API_KEY"):
+                load_client()
+
+    def test_load_client_reads_optional_env(self):
+        with pytest.MonkeyPatch.context() as m:
+            m.setenv("ZQ_API_KEY", "abc")
+            m.setenv("ZQ_BATCH_SIZE", "12")
+            m.setenv("ZQ_MAX_REQ_PER_MIN", "34")
+            m.setenv("ZQ_TIMEOUT_SECONDS", "9.5")
+            client = load_client()
+
+        assert client.batch_size == 12
+        assert client.max_req_per_min == 34
+        assert client.timeout_seconds == 9.5

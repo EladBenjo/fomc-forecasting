@@ -9,6 +9,7 @@ Close Phase 3 with a production-ready T5YIE target pipeline and leak-free merged
 - Ingest and DB consolidation are complete.
 - Feature pipeline exists and currently outputs document-level sentiment + novelty to `data/features/doc_level/features.parquet`.
 - Sentiment uses ZettaQuant API (`cb_inflation_relevancy_label`, `cb_stance_label`).
+- Feature extraction reliability addendum is active: checkpoint + cache + atomic finalize.
 - Topic modeling is deferred.
 - This phase is intentionally notebook-gated before additional production coding.
 
@@ -81,3 +82,15 @@ Phase 3 output artifacts:
 - Notebook-first workflow is authoritative for Phase 3 decisions.
 - No production-code mutations during notebook exploration.
 - Commit discipline is mandatory: one small logical commit per step.
+
+## Feature Extraction Reliability & Cost Guardrails
+
+This addendum is active during notebook work and later implementation:
+- Use SQLite document checkpointing for resumable feature extraction.
+- Use sentence-level inference cache keyed by `(model_id, sentence_hash, sentence_text)` to reduce repeated ZettaQuant calls.
+- Use atomic parquet finalization to avoid partial output corruption on interruption.
+
+Operational defaults:
+- Resume enabled by default.
+- Checkpoint flush every 25 docs.
+- Exponential backoff retry budget of 5 for transient API failures.

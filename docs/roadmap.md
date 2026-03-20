@@ -50,6 +50,25 @@ Current state:
 Status note:
 - Topic modeling is **deferred** (not removed) and is not required to close current Phase 2/3 priorities.
 
+### Feature Extraction Reliability & Cost Guardrails (active)
+
+Large feature runs are now expected to be checkpointed and cache-backed by default to avoid losing work or wasting API calls.
+
+Mechanisms:
+- SQLite document checkpoint state under `data/features/doc_level/` for resume-safe progress.
+- SQLite sentence-level inference cache keyed by `(model_id, sentence_hash, sentence_text)` to avoid repeated ZettaQuant calls.
+- Atomic parquet finalization (`temp -> replace`) so `features.parquet` is never partially overwritten.
+
+Execution defaults:
+- Resume behavior enabled by default.
+- Checkpoint commit cadence every 25 docs.
+- Transient API retries with exponential backoff (default max retries: 5).
+
+Tradeoff summary:
+- Checkpoint DB adds local state management but gives robust resume/idempotence.
+- Sentence cache grows over time but materially reduces repeated API costs.
+- Atomic finalize uses temporary extra disk space but avoids corrupt final outputs.
+
 ---
 
 ### Phase 3: Target Variable + Dataset Builder (notebook-first execution)

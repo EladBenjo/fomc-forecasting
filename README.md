@@ -80,6 +80,28 @@ The sentiment stack was refactored from a local Hugging Face model path to Zetta
 **Runtime configuration**
 - Required: `ZQ_API_KEY`
 - Optional: `ZQ_BATCH_SIZE` (default `10`), `ZQ_MAX_REQ_PER_MIN` (default `10`), `ZQ_TIMEOUT_SECONDS` (default `30`)
+- Optional: `ZQ_MAX_RETRIES` (default `5`)
+
+### Feature Extraction Reliability and Cost Controls
+
+The feature pipeline is designed to be interruption-safe and API-cost-aware for long runs.
+
+Mechanisms:
+- **Document checkpoint (SQLite):** stores per-document feature rows and resumes by default on rerun.
+- **Sentence inference cache (SQLite):** caches model labels by `(model_id, sentence_hash, sentence_text)` so repeated runs do not repay identical ZettaQuant calls.
+- **Atomic parquet finalize:** writes a temporary parquet and atomically replaces `features.parquet` only after a successful full materialization.
+- **Transient retry policy:** exponential backoff for `429`/`5xx`/timeouts (default max retries: `5`).
+
+CLI controls:
+- `--checkpoint-every` (default `25`)
+- `--resume` / `--no-resume` (default resume enabled)
+- `--reset-checkpoint` (recompute selected source types from scratch)
+- `--max-retries` (overrides env default)
+
+Tradeoffs (and why these choices were made):
+- SQLite checkpointing adds a local state file but gives robust idempotent resume.
+- Sentence-level cache adds storage growth over time but greatly reduces repeated inference cost.
+- Atomic finalize briefly uses extra disk space but avoids partial/corrupt final parquet outputs.
 
 ### Novelty - TF-IDF cosine distance
 

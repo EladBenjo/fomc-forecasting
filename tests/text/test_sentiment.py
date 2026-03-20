@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import requests
+from pathlib import Path
+
 import pytest
+import requests
 
 from fedtext.text.features import sentiment
 from fedtext.text.features.sentiment import SentimentResult, ZettaQuantClient, load_client, score_document
@@ -16,7 +18,9 @@ class _Resp:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            raise requests.HTTPError(f"HTTP {self.status_code}")
+            exc = requests.HTTPError(f"HTTP {self.status_code}")
+            exc.response = type("Resp", (), {"status_code": self.status_code})()
+            raise exc
 
     def json(self) -> dict:
         return self._payload
@@ -29,22 +33,18 @@ class TestScoreDocument:
         def _post(url, headers, json, timeout):
             calls.append(json)
             if json["model_id"] == sentiment.ZQ_RELEVANCY_MODEL_ID:
-                # 3 inputs -> keep only first and third
-                return _Resp({
-                    "predictions": [
-                        {"label": "Relevant"},
-                        {"label": "Irrelevant"},
-                        {"label": "Relevant"},
-                    ]
-                })
-            return _Resp({
-                "predictions": [
-                    {"label": "Hawkish"},
-                    {"label": "Neutral"},
-                ]
-            })
+                return _Resp(
+                    {
+                        "predictions": [
+                            {"label": "Relevant"},
+                            {"label": "Irrelevant"},
+                            {"label": "Relevant"},
+                        ]
+                    }
+                )
+            return _Resp({"predictions": [{"label": "Hawkish"}, {"label": "Neutral"}]})
 
-        client = ZettaQuantClient(api_key="k", batch_size=10, max_req_per_min=1_000_000)
+        client = ZettaQuantClient(api_key="k", batch_size=10, max_req_per_min=1_000_000, max_retries=0)
         with pytest.MonkeyPatch.context() as m:
             m.setattr(sentiment.requests, "post", _post)
             result = score_document(
@@ -56,6 +56,7 @@ class TestScoreDocument:
                 ],
                 client=client,
             )
+        client.close()
 
         assert isinstance(result, SentimentResult)
         assert result.n_hawkish == 1
@@ -71,7 +72,7 @@ class TestScoreDocument:
                 return _Resp({"predictions": [{"label": "Relevant"}, {"label": "Relevant"}]})
             return _Resp({"predictions": [{"label": "Hawkish"}, {"label": "Irrelevant"}]})
 
-        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000)
+        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000, max_retries=0)
         with pytest.MonkeyPatch.context() as m:
             m.setattr(sentiment.requests, "post", _post)
             result = score_document(
@@ -82,6 +83,7 @@ class TestScoreDocument:
                 ],
                 client=client,
             )
+        client.close()
 
         assert result.n_hawkish == 1
         assert result.n_target_sentences == 1
@@ -91,56 +93,90 @@ class TestScoreDocument:
         def _post(url, headers, json, timeout):
             return _Resp({"predictions": [{"label": "Irrelevant"}] * len(json["instances"])})
 
-        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000)
+        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000, max_retries=0)
         with pytest.MonkeyPatch.context() as m:
             m.setattr(sentiment.requests, "post", _post)
             result = score_document("", ["This is long enough sentence."], client=client)
+        client.close()
 
         assert result.n_target_sentences == 0
         assert result.hawkish_score == pytest.approx(0.0)
 
 
 class TestZettaQuantClient:
-    def test_batches_instances(self):
-        seen_sizes: list[int] = []
+    def test_cache_hit_skips_repeated_api_calls(self, tmp_path: Path):
+        call_count = 0
 
         def _post(url, headers, json, timeout):
-            seen_sizes.append(len(json["instances"]))
+            nonlocal call_count
+            call_count += 1
             return _Resp({"predictions": [{"label": "Relevant"}] * len(json["instances"])})
 
-        client = ZettaQuantClient(api_key="k", batch_size=2, max_req_per_min=1_000_000)
+        client = ZettaQuantClient(
+            api_key="k",
+            batch_size=2,
+            max_req_per_min=1_000_000,
+            max_retries=0,
+            cache_db_path=tmp_path / "state.sqlite3",
+        )
+        sentences = [
+            "Sentence one long enough.",
+            "Sentence two long enough.",
+            "Sentence three long enough.",
+        ]
+
         with pytest.MonkeyPatch.context() as m:
             m.setattr(sentiment.requests, "post", _post)
-            labels = client.classify_relevancy([
-                "Sentence one long enough.",
-                "Sentence two long enough.",
-                "Sentence three long enough.",
-                "Sentence four long enough.",
-                "Sentence five long enough.",
-            ])
+            labels1 = client.classify_relevancy(sentences)
+            labels2 = client.classify_relevancy(sentences)
+        client.close()
 
-        assert seen_sizes == [2, 2, 1]
-        assert labels == ["Relevant"] * 5
+        assert call_count == 2
+        assert labels1 == ["Relevant", "Relevant", "Relevant"]
+        assert labels2 == ["Relevant", "Relevant", "Relevant"]
 
-    def test_raises_on_http_error(self):
+    def test_retry_backoff_on_timeout_then_success(self):
+        attempts = 0
+
         def _post(url, headers, json, timeout):
-            return _Resp({"predictions": []}, status_code=429)
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise requests.Timeout("network timeout")
+            return _Resp({"predictions": [{"label": "Relevant"}] * len(json["instances"])})
 
-        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000)
+        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000, max_retries=5)
         with pytest.MonkeyPatch.context() as m:
             m.setattr(sentiment.requests, "post", _post)
-            with pytest.raises(requests.HTTPError):
+            m.setattr(sentiment.time, "sleep", lambda _seconds: None)
+            labels = client.classify_relevancy(["This sentence is long enough."])
+        client.close()
+
+        assert attempts == 3
+        assert labels == ["Relevant"]
+
+    def test_raises_when_retry_budget_exhausted(self):
+        def _post(url, headers, json, timeout):
+            raise requests.Timeout("still failing")
+
+        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000, max_retries=2)
+        with pytest.MonkeyPatch.context() as m:
+            m.setattr(sentiment.requests, "post", _post)
+            m.setattr(sentiment.time, "sleep", lambda _seconds: None)
+            with pytest.raises(requests.Timeout):
                 client.classify_relevancy(["This sentence is long enough."])
+        client.close()
 
     def test_raises_on_malformed_response(self):
         def _post(url, headers, json, timeout):
             return _Resp({"predictions": "not-a-list"})
 
-        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000)
+        client = ZettaQuantClient(api_key="k", max_req_per_min=1_000_000, max_retries=0)
         with pytest.MonkeyPatch.context() as m:
             m.setattr(sentiment.requests, "post", _post)
             with pytest.raises(ValueError, match="predictions"):
                 client.classify_relevancy(["This sentence is long enough."])
+        client.close()
 
 
 class TestLoadClient:
@@ -156,8 +192,11 @@ class TestLoadClient:
             m.setenv("ZQ_BATCH_SIZE", "12")
             m.setenv("ZQ_MAX_REQ_PER_MIN", "34")
             m.setenv("ZQ_TIMEOUT_SECONDS", "9.5")
+            m.setenv("ZQ_MAX_RETRIES", "7")
             client = load_client()
 
         assert client.batch_size == 12
         assert client.max_req_per_min == 34
         assert client.timeout_seconds == 9.5
+        assert client.max_retries == 7
+        client.close()

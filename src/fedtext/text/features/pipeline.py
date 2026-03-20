@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 _OUT_DIR = FEATURES_DIR / "doc_level"
 _STATE_DB = _OUT_DIR / "features_state.sqlite3"
+_CACHE_DB = _OUT_DIR / "features_cache.sqlite3"
 _CHECKPOINT_TABLE = "features_doc_checkpoint"
 _OUTPUT_COLUMNS = [
     "doc_id",
@@ -300,7 +301,7 @@ def run(
         logger.info("Resume enabled: %d already checkpointed, %d remaining.", len(completed), len(to_process))
 
     logger.info("Initializing sentiment client...")
-    client = sentiment_mod.load_client(cache_db_path=_STATE_DB, max_retries=max_retries)
+    client = sentiment_mod.load_client(cache_db_path=_CACHE_DB, max_retries=max_retries)
 
     pending_writes = 0
     try:

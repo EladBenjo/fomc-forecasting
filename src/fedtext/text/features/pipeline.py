@@ -7,14 +7,20 @@ a parquet file to data/features/doc_level/features.parquet.
 Usage:
     python -m fedtext.text.features.pipeline
     python -m fedtext.text.features.pipeline --source-types speeches documents
-    python -m fedtext.text.features.pipeline --limit 50   # for testing
+    python -m fedtext.text.features.pipeline --limit 50
+    python -m fedtext.text.features.pipeline --checkpoint-every 25
+    python -m fedtext.text.features.pipeline --no-resume
+    python -m fedtext.text.features.pipeline --reset-checkpoint
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import os
+import sqlite3
 import sys
+from pathlib import Path
 
 import pandas as pd
 
@@ -32,6 +38,25 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 _OUT_DIR = FEATURES_DIR / "doc_level"
+_STATE_DB = _OUT_DIR / "features_state.sqlite3"
+_CHECKPOINT_TABLE = "features_doc_checkpoint"
+_OUTPUT_COLUMNS = [
+    "doc_id",
+    "source_type",
+    "date",
+    "hawkish_score",
+    "n_hawkish",
+    "n_dovish",
+    "n_neutral",
+    "n_target_sentences",
+    "novelty",
+]
+_SOURCE_TYPE_TO_ROW_LABEL = {
+    "speeches": "speech",
+    "documents": "document",
+    "speech": "speech",
+    "document": "document",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +97,152 @@ def _load_documents(conn, limit: int | None) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def _open_state_conn() -> sqlite3.Connection:
+    _OUT_DIR.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(_STATE_DB)
+    _init_state_schema(conn)
+    return conn
+
+
+def _to_row_source_types(source_types: list[str]) -> list[str]:
+    row_types = [_SOURCE_TYPE_TO_ROW_LABEL[s] for s in source_types]
+    # Preserve order while deduplicating.
+    return list(dict.fromkeys(row_types))
+
+
+def _init_state_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {_CHECKPOINT_TABLE} (
+            source_type        TEXT NOT NULL,
+            doc_id             INTEGER NOT NULL,
+            date               TEXT NOT NULL,
+            hawkish_score      REAL NOT NULL,
+            n_hawkish          INTEGER NOT NULL,
+            n_dovish           INTEGER NOT NULL,
+            n_neutral          INTEGER NOT NULL,
+            n_target_sentences INTEGER NOT NULL,
+            novelty            REAL,
+            updated_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (source_type, doc_id)
+        )
+        """
+    )
+    conn.commit()
+
+
+def _reset_checkpoint(conn: sqlite3.Connection, source_types: list[str]) -> None:
+    placeholders = ",".join("?" for _ in source_types)
+    conn.execute(
+        f"DELETE FROM {_CHECKPOINT_TABLE} WHERE source_type IN ({placeholders})",
+        source_types,
+    )
+    conn.commit()
+
+
+def _load_completed_keys(conn: sqlite3.Connection, source_types: list[str]) -> set[tuple[str, int]]:
+    placeholders = ",".join("?" for _ in source_types)
+    rows = conn.execute(
+        f"""
+        SELECT source_type, doc_id
+        FROM {_CHECKPOINT_TABLE}
+        WHERE source_type IN ({placeholders})
+        """,
+        source_types,
+    ).fetchall()
+    return {(str(r[0]), int(r[1])) for r in rows}
+
+
+def _upsert_checkpoint_row(conn: sqlite3.Connection, row: dict) -> None:
+    conn.execute(
+        f"""
+        INSERT INTO {_CHECKPOINT_TABLE} (
+            source_type,
+            doc_id,
+            date,
+            hawkish_score,
+            n_hawkish,
+            n_dovish,
+            n_neutral,
+            n_target_sentences,
+            novelty
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_type, doc_id)
+        DO UPDATE SET
+            date = excluded.date,
+            hawkish_score = excluded.hawkish_score,
+            n_hawkish = excluded.n_hawkish,
+            n_dovish = excluded.n_dovish,
+            n_neutral = excluded.n_neutral,
+            n_target_sentences = excluded.n_target_sentences,
+            novelty = excluded.novelty,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            row["source_type"],
+            int(row["doc_id"]),
+            str(row["date"]),
+            float(row["hawkish_score"]),
+            int(row["n_hawkish"]),
+            int(row["n_dovish"]),
+            int(row["n_neutral"]),
+            int(row["n_target_sentences"]),
+            row["novelty"],
+        ),
+    )
+
+
+def _load_checkpoint_frame(
+    conn: sqlite3.Connection,
+    source_types: list[str],
+    expected_keys: set[tuple[str, int]],
+) -> pd.DataFrame:
+    placeholders = ",".join("?" for _ in source_types)
+    df = pd.read_sql_query(
+        f"""
+        SELECT
+            doc_id,
+            source_type,
+            date,
+            hawkish_score,
+            n_hawkish,
+            n_dovish,
+            n_neutral,
+            n_target_sentences,
+            novelty
+        FROM {_CHECKPOINT_TABLE}
+        WHERE source_type IN ({placeholders})
+        """,
+        conn,
+        params=source_types,
+    )
+
+    if not expected_keys:
+        return pd.DataFrame(columns=_OUTPUT_COLUMNS)
+
+    expected_df = pd.DataFrame(list(expected_keys), columns=["source_type", "doc_id"])
+    merged = df.merge(expected_df, on=["source_type", "doc_id"], how="inner")
+
+    if len(merged) != len(expected_keys):
+        raise RuntimeError(
+            f"Checkpoint state incomplete for selected run: expected {len(expected_keys)} rows, "
+            f"found {len(merged)} rows."
+        )
+
+    merged["date"] = pd.to_datetime(merged["date"])
+    merged = merged.sort_values(["date", "source_type", "doc_id"]).reset_index(drop=True)
+    return merged[_OUTPUT_COLUMNS]
+
+
+def _atomic_write_parquet(df: pd.DataFrame, out_path: Path) -> None:
+    tmp_path = out_path.with_suffix(".parquet.tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    df.to_parquet(tmp_path, index=False)
+    os.replace(tmp_path, out_path)
+
+
 # ---------------------------------------------------------------------------
 # Main run
 # ---------------------------------------------------------------------------
@@ -79,9 +250,15 @@ def _load_documents(conn, limit: int | None) -> list[dict]:
 def run(
     source_types: list[str] | None = None,
     limit: int | None = None,
+    checkpoint_every: int = 25,
+    resume: bool = True,
+    reset_checkpoint: bool = False,
+    max_retries: int | None = None,
 ) -> None:
     if source_types is None:
         source_types = ["speeches", "documents"]
+    if checkpoint_every <= 0:
+        raise ValueError("checkpoint_every must be > 0")
 
     conn = get_connection()
 
@@ -101,41 +278,74 @@ def run(
         logger.warning("No records found; nothing to do.")
         return
 
+    expected_keys = {(str(r["source_type"]), int(r["doc_id"])) for r in records}
+    checkpoint_source_types = _to_row_source_types(source_types)
+
     # Novelty
     logger.info("Computing novelty scores...")
     novelty_map = novelty_mod.compute_novelty_by_type(records)
 
-    # Sentiment
+    state_conn = _open_state_conn()
+    if reset_checkpoint:
+        logger.info("Resetting checkpoint rows for selected source types...")
+        _reset_checkpoint(state_conn, checkpoint_source_types)
+
+    completed = _load_completed_keys(state_conn, checkpoint_source_types) if resume else set()
+    to_process = [
+        r for r in records
+        if (str(r["source_type"]), int(r["doc_id"])) not in completed
+    ]
+
+    if resume:
+        logger.info("Resume enabled: %d already checkpointed, %d remaining.", len(completed), len(to_process))
+
     logger.info("Initializing sentiment client...")
-    client = sentiment_mod.load_client()
+    client = sentiment_mod.load_client(cache_db_path=_STATE_DB, max_retries=max_retries)
 
-    rows = []
-    for i, rec in enumerate(records):
-        if i % 100 == 0:
-            logger.info("Sentiment: %d / %d", i, len(records))
+    pending_writes = 0
+    try:
+        for i, rec in enumerate(to_process):
+            if i % 100 == 0:
+                logger.info("Sentiment: %d / %d", i, len(to_process))
 
-        text = normalize(rec["text"])
-        sents = split_sentences(text)
-        result = sentiment_mod.score_document(text, sents, client=client)
+            text = normalize(rec["text"])
+            sents = split_sentences(text)
+            result = sentiment_mod.score_document(text, sents, client=client)
 
-        rows.append({
-            "doc_id": rec["doc_id"],
-            "source_type": rec["source_type"],
-            "date": rec["date"],
-            "hawkish_score": result.hawkish_score,
-            "n_hawkish": result.n_hawkish,
-            "n_dovish": result.n_dovish,
-            "n_neutral": result.n_neutral,
-            "n_target_sentences": result.n_target_sentences,
-            "novelty": novelty_map.get(rec["doc_id"], float("nan")),
-        })
+            row = {
+                "doc_id": rec["doc_id"],
+                "source_type": rec["source_type"],
+                "date": rec["date"],
+                "hawkish_score": result.hawkish_score,
+                "n_hawkish": result.n_hawkish,
+                "n_dovish": result.n_dovish,
+                "n_neutral": result.n_neutral,
+                "n_target_sentences": result.n_target_sentences,
+                "novelty": novelty_map.get(rec["doc_id"], float("nan")),
+            }
+            _upsert_checkpoint_row(state_conn, row)
+            pending_writes += 1
 
-    df = pd.DataFrame(rows)
+            if pending_writes >= checkpoint_every:
+                state_conn.commit()
+                logger.info("Checkpoint flush: %d docs", checkpoint_every)
+                pending_writes = 0
+    finally:
+        if pending_writes > 0:
+            state_conn.commit()
+        client.close()
 
-    _OUT_DIR.mkdir(parents=True, exist_ok=True)
+    df = _load_checkpoint_frame(
+        conn=state_conn,
+        source_types=checkpoint_source_types,
+        expected_keys=expected_keys,
+    )
+
     out_path = _OUT_DIR / "features.parquet"
-    df.to_parquet(out_path, index=False)
+    _atomic_write_parquet(df, out_path)
     logger.info("Wrote %d rows to %s", len(df), out_path)
+
+    state_conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +364,26 @@ def _parse_args() -> argparse.Namespace:
         "--limit", type=int, default=None,
         help="Max documents per source type (for testing)",
     )
+    p.add_argument(
+        "--checkpoint-every", type=int, default=25,
+        help="Commit checkpoint progress every N docs (default: 25)",
+    )
+    p.add_argument(
+        "--resume", dest="resume", action="store_true", default=True,
+        help="Resume from existing checkpoint state (default: enabled)",
+    )
+    p.add_argument(
+        "--no-resume", dest="resume", action="store_false",
+        help="Disable resume and recompute selected docs",
+    )
+    p.add_argument(
+        "--reset-checkpoint", action="store_true",
+        help="Delete existing checkpoint rows for selected source types before run",
+    )
+    p.add_argument(
+        "--max-retries", type=int, default=int(os.getenv("ZQ_MAX_RETRIES", "5")),
+        help="Max retries for transient API errors (default: env ZQ_MAX_RETRIES or 5)",
+    )
     return p.parse_args()
 
 
@@ -162,4 +392,8 @@ if __name__ == "__main__":
     run(
         source_types=args.source_types,
         limit=args.limit,
+        checkpoint_every=args.checkpoint_every,
+        resume=args.resume,
+        reset_checkpoint=args.reset_checkpoint,
+        max_retries=args.max_retries,
     )

@@ -90,6 +90,7 @@ Mechanisms:
 - **Document checkpoint (SQLite):** stores per-document feature rows and resumes by default on rerun.
 - **Sentence inference cache (SQLite):** caches model labels by `(model_id, sentence_hash, sentence_text)` so repeated runs do not repay identical ZettaQuant calls.
 - **Atomic parquet finalize:** writes a temporary parquet and atomically replaces `features.parquet` only after a successful full materialization.
+- **Dataset manifest + registry:** each successful feature build can write a JSON manifest under `data/features/doc_level/manifests/` and upsert a row into `data/features/doc_level/dataset_registry.sqlite3` with run metadata (dataset version, git SHA, input/output hashes, preprocessing versions).
 - **Transient retry policy:** exponential backoff for `429`/`5xx`/timeouts (default max retries: `5`).
 
 CLI controls:
@@ -97,6 +98,12 @@ CLI controls:
 - `--resume` / `--no-resume` (default resume enabled)
 - `--reset-checkpoint` (recompute selected source types from scratch)
 - `--max-retries` (overrides env default)
+- `--dataset-version` (optional explicit dataset tag; otherwise auto-generated)
+- `--cleaning-version` / `--sentence-split-version` (semantic versions stored in manifest/registry)
+- `--manifest` / `--no-manifest` (enable/disable manifest+registry writes; enabled by default)
+
+Comparison helper:
+- `python scripts/compare_feature_versions.py <manifest_a.json> <manifest_b.json> --out reports/data_diff.md`
 
 Tradeoffs (and why these choices were made):
 - SQLite checkpointing adds a local state file but gives robust idempotent resume.

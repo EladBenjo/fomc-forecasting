@@ -1,5 +1,6 @@
 beautifulsoup4>=4.12
 requests>=2.31
+fredapi>=0.5
 numpy>=1.26
 pandas>=2.2
 scikit-learn>=1.4

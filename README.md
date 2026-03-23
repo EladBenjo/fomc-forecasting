@@ -10,7 +10,7 @@ A portfolio project converting original research notebooks into a production-gra
 
 1. **Ingests** Fed speeches (1996-present) and FOMC policy documents (statements, minutes)
 2. **Extracts text features** - hawkish/dovish sentiment via ZettaQuant central bank classifiers, meeting-over-meeting novelty (TF-IDF cosine distance), and topic diagnostics
-3. **Joins** with inflation expectation targets from FRED (Michigan Survey, 5yr breakeven)
+3. **Builds and versions** inflation expectation targets from FRED (raw + transformed local artifacts)
 4. **Trains** walk-forward models - AR baselines -> SARIMAX -> XGBoost - with no lookahead leakage
 5. **Serves** a Streamlit demo with pipeline status, feature explorer, model results, and a RAG chat interface grounded in source documents
 
@@ -41,7 +41,9 @@ data/catalog/fedtext.db          <- unified SQLite (speeches + documents + chunk
     |      novelty   (TF-IDF cosine distance)
     |      topics    (diagnostic only)
     |
-    |-- FRED targets              -> data/targets/*.parquet
+    |-- FRED targets              -> data/targets/t5yie_raw.parquet
+    |                           -> data/targets/t5yie_diff1.parquet
+    |                           -> data/targets/manifests/*.json + dataset_registry.sqlite3
     |
     `-- embeddings (sqlite-vec)   <- RAG retrieval
             |
@@ -122,6 +124,33 @@ The research notebook implemented both rule-based (keyword counting) and zero-sh
 
 ---
 
+## Target Series Pipeline (Phase 3)
+
+The target pipeline fetches FRED series and materializes canonical raw + transformed outputs with run metadata.
+
+Artifacts:
+- `data/targets/t5yie_raw.parquet` (columns: `date`, `t5yie`)
+- `data/targets/t5yie_diff1.parquet` (columns: `date`, `t5yie_diff1`)
+- `data/targets/manifests/<dataset_version>.json`
+- `data/targets/dataset_registry.sqlite3`
+
+Version metadata fields:
+- `dataset_version`, `created_at_utc`, `git_sha`, `series_id`, `transform_id`
+- `raw_output_path`, `raw_output_sha256`, `raw_output_rows`
+- `transformed_output_path`, `transformed_output_sha256`, `transformed_output_rows`
+- `fetch_start`, `fetch_end`
+
+Runtime configuration:
+- Required: `FRED_API_KEY`
+
+CLI:
+- `python -m fedtext.targets.pipeline --series-id T5YIE --transform diff1`
+- Optional window: `--start YYYY-MM-DD --end YYYY-MM-DD`
+- Optional version tag: `--dataset-version <tag>`
+- Metadata writes: `--manifest` / `--no-manifest` (default enabled)
+
+---
+
 ## Current status
 
 | Phase | Description | Status |
@@ -162,6 +191,13 @@ python -m fedtext.ingest.validators.completeness
 
 # 6. Build text features
 python -m fedtext.text.features.pipeline
+
+# 7. Build and version FRED target series (raw + diff1)
+# PowerShell:
+#   $env:FRED_API_KEY="your_key_here"
+# Bash:
+#   export FRED_API_KEY="your_key_here"
+python -m fedtext.targets.pipeline --series-id T5YIE --transform diff1
 ```
 
 For faster testing, add `--limit N` to ingest/feature commands.
@@ -190,10 +226,12 @@ src/fedtext/
 |   |-- documents/   # discovery + fetch + parse
 |   |-- storage/     # versioned SQL migrations
 |   `-- validators/  # data quality checks
+|-- targets/         # FRED fetch + transforms + target dataset versioning
 `-- text/            # cleaning, chunker, features
 
 configs/             # sources.yaml - URLs, rate limits, categories
 data/catalog/        # fedtext.db (SQLite)
+data/targets/        # raw + transformed target parquets, manifests, registry
 scripts/             # one-off utilities
 notebooks/           # research + portfolio notebooks
 docs/                # roadmap

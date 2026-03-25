@@ -35,7 +35,7 @@ Strategy: finish the quantitative pipeline first, then layer in RAG.
 
 ---
 
-### Phase 2: Feature Engineering (active/mostly complete)
+### Phase 2: Feature Engineering (done)
 
 **Goal:** Compute document-level text features and store them for modeling.
 
@@ -49,8 +49,9 @@ Current state:
 
 Status note:
 - Topic modeling is **deferred** (not removed) and is not required to close current Phase 2/3 priorities.
+- Non-blocking backlog item: persist sentence splits for auditability/reuse (optional reliability extension; does not reopen Phase 2).
 
-### Feature Extraction Reliability & Cost Guardrails (active)
+### Feature Extraction Reliability & Cost Guardrails (done/operational)
 
 Large feature runs are now expected to be checkpointed and cache-backed by default to avoid losing work or wasting API calls.
 
@@ -93,6 +94,12 @@ Planned artifacts:
 - `data/targets/t5yie.parquet`
 - `data/targets/model_dataset_t5yie.parquet`
 - `data/splits/time_splits.json`
+
+Current gaps (as of March 25, 2026):
+- Joint TS+text EDA notebook still needs finalization/signoff.
+- Merged Phase 3 dataset artifact still needs to be produced/finalized: `data/targets/model_dataset_t5yie.parquet`.
+- Time split artifact still needs to be produced/finalized: `data/splits/time_splits.json`.
+- Target outputs are required Phase 3 artifacts and are not treated as complete based on code presence alone.
 
 ---
 
@@ -175,8 +182,8 @@ fedtext app       # launch Streamlit
 ```text
 Phase 1 (done)
   -> Phase 1.5 (done)
-  -> Phase 2 (active/mostly complete)
-  -> Phase 3 notebook gates (active)
+  -> Phase 2 (done)
+  -> Phase 3 notebook-first execution (active)
   -> Phase 3 production implementation
   -> Phase 4 baselines
   -> Phase 5 ML

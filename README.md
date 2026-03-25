@@ -134,6 +134,12 @@ Artifacts:
 - `data/targets/manifests/<dataset_version>.json`
 - `data/targets/dataset_registry.sqlite3`
 
+Current gaps (as of March 25, 2026):
+- Joint TS+text EDA notebook still needs finalization/signoff.
+- Merged Phase 3 dataset artifact still needs to be produced/finalized: `data/targets/model_dataset_t5yie.parquet`.
+- Time split artifact still needs to be produced/finalized: `data/splits/time_splits.json`.
+- Target outputs are required Phase 3 artifacts and are not treated as complete based on code presence alone.
+
 Version metadata fields:
 - `dataset_version`, `created_at_utc`, `git_sha`, `series_id`, `transform_id`
 - `raw_output_path`, `raw_output_sha256`, `raw_output_rows`
@@ -158,13 +164,15 @@ CLI:
 | 1 | Ingest hardening (versioned migrations, validators, YAML config) | done |
 | 1.5 | DB consolidation (`speeches.db` + `catalog.sqlite` -> `fedtext.db`) | done |
 | 2 | Feature engineering (ZettaQuant sentiment, novelty, topics) | done |
-| 3 | Target variable + dataset builder (FRED) | next |
+| 3 | Target variable + dataset builder (FRED) | active (notebook-first) |
 | 4 | Baseline models (AR, SARIMAX) | - |
 | 5 | ML models (XGBoost) | - |
 | 6 | RAG layer (sentence-transformers + sqlite-vec) | - |
 | 7 | Streamlit demo app | - |
 
 **Data as of Phase 1.5:** 1,932 speeches, 534 FOMC documents, unified in `fedtext.db`.
+
+**Phase 2 backlog (non-blocking):** sentence-split persistence for auditability/reuse remains an optional reliability extension and does not reopen Phase 2 completion.
 
 ---
 

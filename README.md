@@ -155,6 +155,14 @@ CLI:
 - Optional version tag: `--dataset-version <tag>`
 - Metadata writes: `--manifest` / `--no-manifest` (default enabled)
 
+Notebook EDA DB helper:
+- `python scripts/build_targets_eda_db.py`
+- Builds one SQLite DB combining:
+  - `features_doc_level` (from `data/features/doc_level/features.parquet`)
+  - `target_raw` and `target_transformed` (from `data/targets/*.parquet`)
+  - `build_metadata`
+- If target parquet artifacts are missing, the script auto-fetches them via `fedtext.targets.pipeline` by default.
+
 ---
 
 ## Current status
@@ -206,6 +214,9 @@ python -m fedtext.text.features.pipeline
 # Bash:
 #   export FRED_API_KEY="your_key_here"
 python -m fedtext.targets.pipeline --series-id T5YIE --transform diff1
+
+# 8. Build SQLite DB for TS + text-feature EDA (notebook-ready)
+python scripts/build_targets_eda_db.py
 ```
 
 For faster testing, add `--limit N` to ingest/feature commands.
@@ -229,12 +240,12 @@ For faster testing, add `--limit N` to ingest/feature commands.
 ```text
 src/fedtext/
 |-- common/          # db connection, path constants
-|-- ingest/
+|-- ingest/          # Fed text ingest only (speeches/documents)
 |   |-- speeches/    # discovery + fetch
 |   |-- documents/   # discovery + fetch + parse
 |   |-- storage/     # versioned SQL migrations
 |   `-- validators/  # data quality checks
-|-- targets/         # FRED fetch + transforms + target dataset versioning
+|-- targets/         # FRED fetch + transforms + target storage/versioning
 `-- text/            # cleaning, chunker, features
 
 configs/             # sources.yaml - URLs, rate limits, categories

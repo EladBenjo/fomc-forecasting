@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import datasets.build_dataset.builder as builder_module
 from datasets.build_dataset import BuildDatasetConfig, build_model_dataset
 from datasets.schema.fields import MODEL_DATASET_COLUMNS
 
@@ -276,3 +277,68 @@ def test_build_model_dataset_fails_on_invalid_split_config(tmp_path: Path):
     with pytest.raises(ValueError, match="train_end must be before val_start"):
         build_model_dataset(bad_config)
 
+
+def test_main_cli_builds_dataset_and_split_outputs(tmp_path: Path):
+    config = _build_config(tmp_path)
+    target_df = _make_alignment_target_df()
+    features_df = pd.DataFrame(_make_base_feature_rows())
+    features_df["date"] = pd.to_datetime(features_df["date"])
+
+    _write_parquet(target_df, config.target_path)
+    _write_parquet(features_df, config.features_path)
+
+    out_path = builder_module.main(
+        [
+            "--features-path",
+            str(config.features_path),
+            "--target-path",
+            str(config.target_path),
+            "--output-dataset-path",
+            str(config.output_dataset_path),
+            "--split-output-path",
+            str(config.split_output_path),
+            "--summary-output-path",
+            str(config.summary_output_path),
+        ]
+    )
+
+    assert out_path == config.output_dataset_path
+    assert config.output_dataset_path.exists()
+    assert config.split_output_path.exists()
+    assert config.summary_output_path is not None
+    assert config.summary_output_path.exists()
+
+
+def test_main_cli_parses_expected_rows_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    captured: dict[str, object] = {}
+
+    def _fake_build(config: BuildDatasetConfig) -> Path:
+        captured["config"] = config
+        return config.output_dataset_path
+
+    monkeypatch.setattr(builder_module, "build_model_dataset", _fake_build)
+
+    features_path = tmp_path / "features.parquet"
+    target_path = tmp_path / "target.parquet"
+    output_path = tmp_path / "out.parquet"
+    split_path = tmp_path / "splits.json"
+    expected_json = '{"dataset_rows": 10, "target_rows": 20}'
+    out = builder_module.main(
+        [
+            "--features-path",
+            str(features_path),
+            "--target-path",
+            str(target_path),
+            "--output-dataset-path",
+            str(output_path),
+            "--split-output-path",
+            str(split_path),
+            "--expected-rows-json",
+            expected_json,
+        ]
+    )
+
+    assert out == output_path
+    config = captured["config"]
+    assert isinstance(config, BuildDatasetConfig)
+    assert config.expected_rows == {"dataset_rows": 10, "target_rows": 20}

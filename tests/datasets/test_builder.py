@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
@@ -342,3 +343,87 @@ def test_main_cli_parses_expected_rows_json(monkeypatch: pytest.MonkeyPatch, tmp
     config = captured["config"]
     assert isinstance(config, BuildDatasetConfig)
     assert config.expected_rows == {"dataset_rows": 10, "target_rows": 20}
+
+
+def test_build_model_dataset_writes_manifest_and_registry_by_default(tmp_path: Path):
+    config = _build_config(tmp_path)
+    config.dataset_version = "model-dataset-t5yie-test"
+
+    target_df = _make_alignment_target_df()
+    features_df = pd.DataFrame(_make_base_feature_rows())
+    features_df["date"] = pd.to_datetime(features_df["date"])
+    _write_parquet(target_df, config.target_path)
+    _write_parquet(features_df, config.features_path)
+
+    build_model_dataset(config)
+
+    manifest_path = (
+        config.output_dataset_path.parent / "manifests" / "model-dataset-t5yie-test.json"
+    )
+    registry_path = config.output_dataset_path.parent / "model_dataset_registry.sqlite3"
+
+    assert manifest_path.exists()
+    assert registry_path.exists()
+
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert payload["dataset_version"] == "model-dataset-t5yie-test"
+    assert payload["target_column"] == "t5yie_diff1"
+    assert payload["output_dataset_rows"] == 4
+
+    conn = sqlite3.connect(registry_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT dataset_version, target_column, output_dataset_rows
+            FROM dataset_registry
+            WHERE dataset_version = 'model-dataset-t5yie-test'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("model-dataset-t5yie-test", "t5yie_diff1", 4)
+
+
+def test_build_model_dataset_no_manifest_when_disabled(tmp_path: Path):
+    config = _build_config(tmp_path)
+    config.write_manifest_files = False
+
+    target_df = _make_alignment_target_df()
+    features_df = pd.DataFrame(_make_base_feature_rows())
+    features_df["date"] = pd.to_datetime(features_df["date"])
+    _write_parquet(target_df, config.target_path)
+    _write_parquet(features_df, config.features_path)
+
+    build_model_dataset(config)
+
+    assert not (config.output_dataset_path.parent / "model_dataset_registry.sqlite3").exists()
+    assert not (config.output_dataset_path.parent / "manifests").exists()
+
+
+def test_main_cli_parses_no_manifest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    captured: dict[str, object] = {}
+
+    def _fake_build(config: BuildDatasetConfig) -> Path:
+        captured["config"] = config
+        return config.output_dataset_path
+
+    monkeypatch.setattr(builder_module, "build_model_dataset", _fake_build)
+
+    out = builder_module.main(
+        [
+            "--features-path",
+            str(tmp_path / "features.parquet"),
+            "--target-path",
+            str(tmp_path / "target.parquet"),
+            "--output-dataset-path",
+            str(tmp_path / "out.parquet"),
+            "--split-output-path",
+            str(tmp_path / "splits.json"),
+            "--no-manifest",
+        ]
+    )
+    assert out == tmp_path / "out.parquet"
+
+    config = captured["config"]
+    assert isinstance(config, BuildDatasetConfig)
+    assert config.write_manifest_files is False

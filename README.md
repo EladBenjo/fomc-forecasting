@@ -45,6 +45,11 @@ data/catalog/fedtext.db          <- unified SQLite (speeches + documents + chunk
     |                           -> data/targets/t5yie_diff1.parquet
     |                           -> data/targets/manifests/*.json + dataset_registry.sqlite3
     |
+    |-- model dataset (Phase 3)  -> data/targets/model_dataset_t5yie.parquet
+    |                           -> data/splits/time_splits.json
+    |                           -> data/targets/manifests/model-dataset-t5yie-*.json
+    |                           -> data/targets/model_dataset_registry.sqlite3
+    |
     `-- embeddings (sqlite-vec)   <- RAG retrieval
             |
             v
@@ -124,7 +129,9 @@ The research notebook implemented both rule-based (keyword counting) and zero-sh
 
 ---
 
-## Target Series Pipeline (Phase 3)
+## Target + Model Dataset Pipelines (Phase 3)
+
+### Target series pipeline (FRED fetch + transform)
 
 The target pipeline fetches FRED series and materializes canonical raw + transformed outputs with run metadata.
 
@@ -133,12 +140,6 @@ Artifacts:
 - `data/targets/t5yie_diff1.parquet` (columns: `date`, `t5yie_diff1`)
 - `data/targets/manifests/<dataset_version>.json`
 - `data/targets/dataset_registry.sqlite3`
-
-Current gaps (as of March 25, 2026):
-- Joint TS+text EDA notebook still needs finalization/signoff.
-- Merged Phase 3 dataset artifact still needs to be produced/finalized: `data/targets/model_dataset_t5yie.parquet`.
-- Time split artifact still needs to be produced/finalized: `data/splits/time_splits.json`.
-- Target outputs are required Phase 3 artifacts and are not treated as complete based on code presence alone.
 
 Version metadata fields:
 - `dataset_version`, `created_at_utc`, `git_sha`, `series_id`, `transform_id`
@@ -154,6 +155,41 @@ CLI:
 - Optional window: `--start YYYY-MM-DD --end YYYY-MM-DD`
 - Optional version tag: `--dataset-version <tag>`
 - Metadata writes: `--manifest` / `--no-manifest` (default enabled)
+
+### Model dataset builder pipeline (monthly no-lookahead)
+
+The model dataset builder implements approved notebook decisions for `t5yie_diff1`:
+- monthly target aggregation (`target_month`)
+- monthly feature aggregation (`feature_month`)
+- strict no-lookahead alignment `feature_month_used = target_month - 1`
+- fixed time splits:
+  - train: `date <= 2016-12-31`
+  - val: `2017-01-01 <= date <= 2020-12-31`
+  - test: `date >= 2021-01-01`
+
+Artifacts:
+- `data/targets/model_dataset_t5yie.parquet`
+- `data/splits/time_splits.json`
+- `data/targets/manifests/model-dataset-t5yie-<dataset_version>.json`
+- `data/targets/model_dataset_registry.sqlite3`
+
+Builder metadata fields include:
+- `dataset_version`, `created_at_utc`, `git_sha`
+- input paths + hashes + row counts (`features`, `target`)
+- output dataset/split/summary paths + hashes + row counts
+- split boundaries and selected feature columns
+
+CLI:
+- `python -m datasets.build_dataset.builder`
+- Optional outputs:
+  - `--output-dataset-path <path>`
+  - `--split-output-path <path>`
+  - `--summary-output-path <path>`
+- Optional versioning:
+  - `--dataset-version <tag>`
+  - `--manifest` / `--no-manifest` (default enabled)
+  - `--manifest-out-dir <dir>`
+  - `--manifest-registry-path <path>`
 
 Notebook EDA DB helper:
 - `python scripts/build_targets_eda_db.py`
@@ -172,8 +208,8 @@ Notebook EDA DB helper:
 | 1 | Ingest hardening (versioned migrations, validators, YAML config) | done |
 | 1.5 | DB consolidation (`speeches.db` + `catalog.sqlite` -> `fedtext.db`) | done |
 | 2 | Feature engineering (ZettaQuant sentiment, novelty, topics) | done |
-| 3 | Target variable + dataset builder (FRED) | active (notebook-first) |
-| 4 | Baseline models (AR, SARIMAX) | - |
+| 3 | Target variable + dataset builder (FRED) | in progress (T5YIE builder implemented) |
+| 4 | Baseline models (AR, SARIMAX) | in progress (notebook done) |
 | 5 | ML models (XGBoost) | - |
 | 6 | RAG layer (sentence-transformers + sqlite-vec) | - |
 | 7 | Streamlit demo app | - |
@@ -217,6 +253,9 @@ python -m fedtext.targets.pipeline --series-id T5YIE --transform diff1
 
 # 8. Build SQLite DB for TS + text-feature EDA (notebook-ready)
 python scripts/build_targets_eda_db.py
+
+# 9. Build monthly model dataset + fixed time splits (versioned)
+python -m datasets.build_dataset.builder
 ```
 
 For faster testing, add `--limit N` to ingest/feature commands.
@@ -250,7 +289,8 @@ src/fedtext/
 
 configs/             # sources.yaml - URLs, rate limits, categories
 data/catalog/        # fedtext.db (SQLite)
-data/targets/        # raw + transformed target parquets, manifests, registry
+data/targets/        # target parquets + model dataset parquet + manifests + registries
+data/splits/         # fixed split artifact json for modeling
 scripts/             # one-off utilities
 notebooks/           # research + portfolio notebooks
 docs/                # roadmap

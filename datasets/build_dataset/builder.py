@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -252,5 +254,130 @@ def build_model_dataset(config: BuildDatasetConfig) -> Path:
     return output_dataset_path
 
 
-__all__ = ["BuildDatasetConfig", "build_model_dataset"]
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Build the Phase 3 monthly leak-free modeling dataset for t5yie_diff1."
+    )
+    parser.add_argument(
+        "--features-path",
+        type=str,
+        default=None,
+        help="Path to doc-level feature parquet (default: data/features/doc_level/features.parquet).",
+    )
+    parser.add_argument(
+        "--target-path",
+        type=str,
+        default=None,
+        help="Path to target parquet (default: data/targets/t5yie_diff1.parquet).",
+    )
+    parser.add_argument(
+        "--output-dataset-path",
+        type=str,
+        default=None,
+        help="Path to output model dataset parquet (default: data/targets/model_dataset_t5yie.parquet).",
+    )
+    parser.add_argument(
+        "--split-output-path",
+        type=str,
+        default=None,
+        help="Path to output time-split json (default: data/splits/time_splits.json).",
+    )
+    parser.add_argument(
+        "--summary-output-path",
+        type=str,
+        default=None,
+        help="Optional path to write summary JSON.",
+    )
+    parser.add_argument(
+        "--target-column",
+        type=str,
+        default=TARGET_COLUMN,
+        help=f"Target column name (default: {TARGET_COLUMN}).",
+    )
+    parser.add_argument(
+        "--monthly-feature-columns",
+        type=str,
+        default=",".join(MONTHLY_FEATURE_COLUMNS),
+        help="Comma-separated monthly feature columns in output order.",
+    )
+    parser.add_argument(
+        "--expected-rows-json",
+        type=str,
+        default=None,
+        help='Optional JSON object for strict row checks (e.g. \'{"dataset_rows": 279}\').',
+    )
+    parser.add_argument("--train-end", type=str, default="2016-12-31", help="Train split end date (inclusive).")
+    parser.add_argument("--val-start", type=str, default="2017-01-01", help="Validation split start date (inclusive).")
+    parser.add_argument("--val-end", type=str, default="2020-12-31", help="Validation split end date (inclusive).")
+    parser.add_argument("--test-start", type=str, default="2021-01-01", help="Test split start date (inclusive).")
+    return parser
 
+
+def _parse_expected_rows_json(raw_json: str | None) -> dict[str, int] | None:
+    if raw_json is None:
+        return None
+    try:
+        parsed = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid --expected-rows-json payload: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("--expected-rows-json must decode to a JSON object.")
+
+    out: dict[str, int] = {}
+    for key, value in parsed.items():
+        if not isinstance(key, str):
+            raise ValueError("--expected-rows-json keys must be strings.")
+        try:
+            out[key] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"--expected-rows-json value for key {key!r} must be int-like.") from exc
+    return out
+
+
+def _config_from_args(args: argparse.Namespace) -> BuildDatasetConfig:
+    monthly_feature_columns = tuple(
+        part.strip() for part in args.monthly_feature_columns.split(",") if part.strip()
+    )
+    if not monthly_feature_columns:
+        raise ValueError("At least one --monthly-feature-columns value is required.")
+
+    config = BuildDatasetConfig(
+        target_column=args.target_column,
+        monthly_feature_columns=monthly_feature_columns,
+        expected_rows=_parse_expected_rows_json(args.expected_rows_json),
+        train_end=args.train_end,
+        val_start=args.val_start,
+        val_end=args.val_end,
+        test_start=args.test_start,
+    )
+    if args.features_path:
+        config.features_path = Path(args.features_path)
+    if args.target_path:
+        config.target_path = Path(args.target_path)
+    if args.output_dataset_path:
+        config.output_dataset_path = Path(args.output_dataset_path)
+    if args.split_output_path:
+        config.split_output_path = Path(args.split_output_path)
+    if args.summary_output_path:
+        config.summary_output_path = Path(args.summary_output_path)
+
+    return config
+
+
+def main(argv: list[str] | None = None) -> Path:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    config = _config_from_args(args)
+    output_path = build_model_dataset(config)
+    print(f"wrote model dataset: {output_path}")
+    print(f"wrote split artifact: {config.split_output_path}")
+    if config.summary_output_path:
+        print(f"wrote summary artifact: {config.summary_output_path}")
+    return output_path
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+
+
+__all__ = ["BuildDatasetConfig", "build_model_dataset", "main"]

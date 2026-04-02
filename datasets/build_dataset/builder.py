@@ -24,6 +24,14 @@ from datasets.build_dataset.alignment import (
     validate_expected_rows,
     validate_feature_source_column,
 )
+from datasets.build_dataset.versioning import (
+    ModelDatasetManifest,
+    default_dataset_version,
+    get_git_sha,
+    hash_file,
+    utc_now_iso,
+    write_manifest,
+)
 from datasets.schema.fields import DATE_COLUMN, MONTHLY_FEATURE_COLUMNS, TARGET_COLUMN
 
 
@@ -57,6 +65,11 @@ class BuildDatasetConfig:
     val_start: str = "2017-01-01"
     val_end: str = "2020-12-31"
     test_start: str = "2021-01-01"
+
+    dataset_version: str | None = None
+    write_manifest_files: bool = True
+    manifest_out_dir: Path | None = None
+    manifest_registry_path: Path | None = None
 
 
 def _as_path(value: str | Path) -> Path:
@@ -250,6 +263,47 @@ def build_model_dataset(config: BuildDatasetConfig) -> Path:
     if summary_output_path:
         _atomic_write_json(summary, summary_output_path)
 
+    if config.write_manifest_files:
+        manifest_out_dir = _as_path(config.manifest_out_dir) if config.manifest_out_dir else output_dataset_path.parent
+        manifest_registry_path = (
+            _as_path(config.manifest_registry_path)
+            if config.manifest_registry_path
+            else manifest_out_dir / "model_dataset_registry.sqlite3"
+        )
+        manifest = ModelDatasetManifest(
+            dataset_version=config.dataset_version or default_dataset_version(prefix="model-dataset-t5yie"),
+            created_at_utc=utc_now_iso(),
+            git_sha=get_git_sha(_repo_root()),
+            target_column=config.target_column,
+            monthly_feature_columns=list(config.monthly_feature_columns),
+            features_input_path=str(features_path),
+            features_input_sha256=hash_file(features_path),
+            features_input_rows=len(features_df),
+            target_input_path=str(target_path),
+            target_input_sha256=hash_file(target_path),
+            target_input_rows=len(target_df),
+            output_dataset_path=str(output_dataset_path),
+            output_dataset_sha256=hash_file(output_dataset_path),
+            output_dataset_rows=len(model_dataset_df),
+            split_output_path=str(split_output_path),
+            split_output_sha256=hash_file(split_output_path),
+            summary_output_path=str(summary_output_path) if summary_output_path else None,
+            summary_output_sha256=hash_file(summary_output_path) if summary_output_path else None,
+            train_end=boundaries["train_end"].strftime("%Y-%m-%d"),
+            val_start=boundaries["val_start"].strftime("%Y-%m-%d"),
+            val_end=boundaries["val_end"].strftime("%Y-%m-%d"),
+            test_start=boundaries["test_start"].strftime("%Y-%m-%d"),
+        )
+        manifest_path = write_manifest(
+            out_dir=manifest_out_dir,
+            registry_path=manifest_registry_path,
+            manifest=manifest,
+            extra={
+                "split_counts": split_counts,
+            },
+        )
+        print(f"wrote manifest: {manifest_path}")
+
     _print_summary(summary)
     return output_dataset_path
 
@@ -306,6 +360,37 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help='Optional JSON object for strict row checks (e.g. \'{"dataset_rows": 279}\').',
     )
+    parser.add_argument(
+        "--dataset-version",
+        type=str,
+        default=None,
+        help="Optional explicit dataset version for manifest/registry writes.",
+    )
+    parser.add_argument(
+        "--manifest-out-dir",
+        type=str,
+        default=None,
+        help="Optional directory for manifest json output (default: output dataset directory).",
+    )
+    parser.add_argument(
+        "--manifest-registry-path",
+        type=str,
+        default=None,
+        help="Optional path for model dataset registry sqlite.",
+    )
+    parser.add_argument(
+        "--manifest",
+        dest="write_manifest_files",
+        action="store_true",
+        default=True,
+        help="Write model-dataset manifest + registry row (default: enabled).",
+    )
+    parser.add_argument(
+        "--no-manifest",
+        dest="write_manifest_files",
+        action="store_false",
+        help="Disable manifest/registry writes.",
+    )
     parser.add_argument("--train-end", type=str, default="2016-12-31", help="Train split end date (inclusive).")
     parser.add_argument("--val-start", type=str, default="2017-01-01", help="Validation split start date (inclusive).")
     parser.add_argument("--val-end", type=str, default="2020-12-31", help="Validation split end date (inclusive).")
@@ -349,6 +434,8 @@ def _config_from_args(args: argparse.Namespace) -> BuildDatasetConfig:
         val_start=args.val_start,
         val_end=args.val_end,
         test_start=args.test_start,
+        dataset_version=args.dataset_version,
+        write_manifest_files=args.write_manifest_files,
     )
     if args.features_path:
         config.features_path = Path(args.features_path)
@@ -360,6 +447,10 @@ def _config_from_args(args: argparse.Namespace) -> BuildDatasetConfig:
         config.split_output_path = Path(args.split_output_path)
     if args.summary_output_path:
         config.summary_output_path = Path(args.summary_output_path)
+    if args.manifest_out_dir:
+        config.manifest_out_dir = Path(args.manifest_out_dir)
+    if args.manifest_registry_path:
+        config.manifest_registry_path = Path(args.manifest_registry_path)
 
     return config
 
@@ -373,6 +464,10 @@ def main(argv: list[str] | None = None) -> Path:
     print(f"wrote split artifact: {config.split_output_path}")
     if config.summary_output_path:
         print(f"wrote summary artifact: {config.summary_output_path}")
+    if config.write_manifest_files:
+        manifest_out_dir = config.manifest_out_dir or config.output_dataset_path.parent
+        manifest_registry = config.manifest_registry_path or (manifest_out_dir / "model_dataset_registry.sqlite3")
+        print(f"wrote model-dataset registry: {manifest_registry}")
     return output_path
 
 

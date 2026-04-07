@@ -134,20 +134,32 @@ Operational command:
 
 ---
 
-### Phase 4: Baseline Models (current - notebook is completed)
+### Phase 4: Baseline Models (done/operational)
 
 **Goal:** Establish performance floor before ML.
 
-- `models/baselines/ar.py` - AR(p)
-- `models/baselines/sarimax.py` - SARIMAX + text features
-- `models/evaluation/walk_forward.py` - rolling/expanding window CV
+- `models/baselines/sarimax.py` - Phase 4 benchmark runner + CLI (`python -m models.baselines.sarimax`)
+- `models/evaluation/walk_forward.py` - leakage-safe expanding one-step SARIMAX evaluation
 - `models/evaluation/metrics.py` - MAE, RMSE, directional accuracy
-- `models/tracking/run_logger.py` - file-based experiment tracking
+- `models/tracking/run_logger.py` - run manifest + registry tracking
 - `notebooks/t5yie_phase4_baseline_vs_exog_benchmark.ipynb`
+
+Operational artifacts:
+- `data/models/baselines/t5yie/<run_version>/predictions.parquet`
+- `data/models/baselines/t5yie/<run_version>/results_table.json`
+- `data/models/baselines/t5yie/<run_version>/paired_comparison.json`
+- `data/models/baselines/t5yie/<run_version>/run_summary.json`
+- `data/models/baselines/t5yie/<run_version>/run_config.json`
+- `data/models/baselines/manifests/<run_version>.json`
+- `data/models/baselines/run_registry.sqlite3`
+
+Status note:
+- Baseline vs exogenous variants are productionized with deterministic evaluation and versioned artifacts.
+- Current benchmark conclusion remains: no meaningful test-period lift from exogenous variants over univariate baseline.
 
 ---
 
-### Phase 5: ML Models
+### Phase 5: ML Models (next)
 
 **Goal:** Beat baselines with gradient boosting on text features.
 
@@ -201,7 +213,7 @@ Phase 1 (done)
   -> Phase 2 (done)
   -> Phase 3 notebook gate + production implementation for T5YIE (done)
   -> Phase 3 extension to second target stream (active)
-  -> Phase 4 baselines
+  -> Phase 4 baselines (done)
   -> Phase 5 ML
   -> Phase 6 RAG
   -> Phase 7 Streamlit + CLI polish

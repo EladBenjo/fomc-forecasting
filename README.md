@@ -11,7 +11,7 @@ A portfolio project converting original research notebooks into a production-gra
 1. **Ingests** Fed speeches (1996-present) and FOMC policy documents (statements, minutes)
 2. **Extracts text features** - hawkish/dovish sentiment via ZettaQuant central bank classifiers, meeting-over-meeting novelty (TF-IDF cosine distance), and topic diagnostics
 3. **Builds and versions** inflation expectation targets from FRED (raw + transformed local artifacts)
-4. **Trains** walk-forward models - AR baselines -> SARIMAX -> XGBoost - with no lookahead leakage
+4. **Trains** walk-forward models - baseline vs exogenous SARIMAX -> XGBoost - with no lookahead leakage
 5. **Serves** a Streamlit demo with pipeline status, feature explorer, model results, and a RAG chat interface grounded in source documents
 
 ---
@@ -49,6 +49,10 @@ data/catalog/fedtext.db          <- unified SQLite (speeches + documents + chunk
     |                           -> data/splits/time_splits.json
     |                           -> data/targets/manifests/model-dataset-t5yie-*.json
     |                           -> data/targets/model_dataset_registry.sqlite3
+    |
+    |-- model runs (Phase 4)     -> data/models/baselines/t5yie/<run_version>/*
+    |                           -> data/models/baselines/manifests/<run_version>.json
+    |                           -> data/models/baselines/run_registry.sqlite3
     |
     `-- embeddings (sqlite-vec)   <- RAG retrieval
             |
@@ -199,6 +203,43 @@ Notebook EDA DB helper:
   - `build_metadata`
 - If target parquet artifacts are missing, the script auto-fetches them via `fedtext.targets.pipeline` by default.
 
+### Phase 4 SARIMAX benchmark pipeline (baseline vs exogenous)
+
+The Phase 4 benchmark productionizes `notebooks/t5yie_phase4_baseline_vs_exog_benchmark.ipynb` with fixed model variants and expanding-window one-step evaluation.
+
+Inputs:
+- `data/targets/model_dataset_t5yie.parquet`
+- `data/splits/time_splits.json`
+
+Command:
+- `python -m models.baselines.sarimax`
+
+Default model setup:
+- order `(1, 0, 0)`, trend `"c"`, min train observations `36`
+- variants:
+  - `baseline_univariate` (no exogenous features)
+  - `exog_minimal_counts` (`hawkish_score`, `novelty`, `doc_count`)
+  - `exog_share_variant` (`hawkish_score`, `novelty`, `hawkish_share`, `dovish_share`)
+
+Versioned run artifacts:
+- `data/models/baselines/t5yie/<run_version>/predictions.parquet`
+- `data/models/baselines/t5yie/<run_version>/results_table.json`
+- `data/models/baselines/t5yie/<run_version>/paired_comparison.json`
+- `data/models/baselines/t5yie/<run_version>/run_summary.json`
+- `data/models/baselines/t5yie/<run_version>/run_config.json`
+
+Run metadata tracking:
+- `data/models/baselines/manifests/<run_version>.json`
+- `data/models/baselines/run_registry.sqlite3`
+
+CLI options:
+- `--run-version <tag>`
+- `--model-order p,d,q`
+- `--model-trend <trend>`
+- `--min-train-obs <int>`
+- `--meaningful-threshold-pct <float>`
+- `--manifest` / `--no-manifest`
+
 ---
 
 ## Current status
@@ -208,8 +249,8 @@ Notebook EDA DB helper:
 | 1 | Ingest hardening (versioned migrations, validators, YAML config) | done |
 | 1.5 | DB consolidation (`speeches.db` + `catalog.sqlite` -> `fedtext.db`) | done |
 | 2 | Feature engineering (ZettaQuant sentiment, novelty, topics) | done |
-| 3 | Target variable + dataset builder (FRED) | in progress (T5YIE builder implemented) |
-| 4 | Baseline models (AR, SARIMAX) | in progress (notebook done) |
+| 3 | Target variable + dataset builder (FRED) | in progress (T5YIE done; additional target stream pending) |
+| 4 | Baseline models (SARIMAX benchmark pipeline) | done (production runner + tracking + tests) |
 | 5 | ML models (XGBoost) | - |
 | 6 | RAG layer (sentence-transformers + sqlite-vec) | - |
 | 7 | Streamlit demo app | - |
@@ -256,6 +297,9 @@ python scripts/build_targets_eda_db.py
 
 # 9. Build monthly model dataset + fixed time splits (versioned)
 python -m datasets.build_dataset.builder
+
+# 10. Run Phase 4 SARIMAX baseline vs exogenous benchmark (versioned run artifacts)
+python -m models.baselines.sarimax
 ```
 
 For faster testing, add `--limit N` to ingest/feature commands.
@@ -291,8 +335,11 @@ configs/             # sources.yaml - URLs, rate limits, categories
 data/catalog/        # fedtext.db (SQLite)
 data/targets/        # target parquets + model dataset parquet + manifests + registries
 data/splits/         # fixed split artifact json for modeling
+data/models/         # phase4 model run artifacts + manifests + registry
+models/              # phase4 benchmark/evaluation/tracking modules
 scripts/             # one-off utilities
 notebooks/           # research + portfolio notebooks
+tests/models/        # phase4 benchmark/evaluation/tracking tests
 docs/                # roadmap
 ```
 

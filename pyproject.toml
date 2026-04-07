@@ -13,6 +13,7 @@ dependencies = [
     "requests>=2.31",
     "pyarrow>=23.0",
     "statsmodels>=0.14",
+    "streamlit>=1.39",
 ]
 
 [tool.setuptools.packages.find]

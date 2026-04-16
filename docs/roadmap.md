@@ -178,7 +178,7 @@ Status note:
 
 ---
 
-### Phase 7: Streamlit Demo App
+### Phase 7: Streamlit Demo App (in progress - MVP wired)
 
 **Goal:** Polished portfolio demo.
 
@@ -186,9 +186,15 @@ Pages:
 1. Pipeline Status - ingest counts, coverage, scrape summary
 2. Feature Explorer - sentiment over time, novelty spikes, topic diagnostics
 3. Model Results - walk-forward predictions, metrics, feature importance
-4. RAG Chat - grounded Q&A on Fed communications
+4. RAG Chat - placeholder in MVP; full grounded Q&A deferred to Phase 6 delivery
 
 Structure: `app/main.py` + `app/pages/`
+
+Current MVP status:
+- Streamlit app shell implemented with read-only artifact loading.
+- Pipeline Status, Feature Explorer, and Model Results are wired to existing artifacts.
+- Missing artifacts surface explicit CLI remediation commands.
+- RAG page is intentionally disabled placeholder until retrieval/generation implementation.
 
 ---
 
@@ -214,7 +220,8 @@ Phase 1 (done)
   -> Phase 3 notebook gate + production implementation for T5YIE (done)
   -> Phase 3 extension to second target stream (active)
   -> Phase 4 baselines (done)
+  -> Phase 7 app MVP (in progress)
   -> Phase 5 ML
   -> Phase 6 RAG
-  -> Phase 7 Streamlit + CLI polish
+  -> Phase 7 Streamlit + CLI polish (final)
 ```

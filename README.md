@@ -240,6 +240,24 @@ CLI options:
 - `--meaningful-threshold-pct <float>`
 - `--manifest` / `--no-manifest`
 
+### Phase 7 Streamlit app MVP (in progress)
+
+The app MVP is now wired to existing artifacts and remains strictly read-only.
+
+Launch command:
+- `streamlit run app/main.py`
+
+Current MVP pages:
+1. Pipeline Status
+2. Feature Explorer
+3. Model Results (Phase 4 artifacts)
+4. RAG Chat (placeholder only; Phase 6 not implemented yet)
+
+Read-only contract:
+- no pipeline execution from UI
+- no writes to model/data artifacts
+- missing prerequisites are shown with exact CLI remediation commands
+
 ---
 
 ## Current status
@@ -253,7 +271,7 @@ CLI options:
 | 4 | Baseline models (SARIMAX benchmark pipeline) | done (production runner + tracking + tests) |
 | 5 | ML models (XGBoost) | - |
 | 6 | RAG layer (sentence-transformers + sqlite-vec) | - |
-| 7 | Streamlit demo app | - |
+| 7 | Streamlit demo app | in progress (MVP wired to artifact views) |
 
 **Data as of Phase 1.5:** 1,932 speeches, 534 FOMC documents, unified in `fedtext.db`.
 
@@ -300,6 +318,9 @@ python -m datasets.build_dataset.builder
 
 # 10. Run Phase 4 SARIMAX baseline vs exogenous benchmark (versioned run artifacts)
 python -m models.baselines.sarimax
+
+# 11. Launch Streamlit app MVP (read-only artifact explorer)
+streamlit run app/main.py
 ```
 
 For faster testing, add `--limit N` to ingest/feature commands.
@@ -337,9 +358,11 @@ data/targets/        # target parquets + model dataset parquet + manifests + reg
 data/splits/         # fixed split artifact json for modeling
 data/models/         # phase4 model run artifacts + manifests + registry
 models/              # phase4 benchmark/evaluation/tracking modules
+app/                 # streamlit app MVP (status/features/models + RAG placeholder)
 scripts/             # one-off utilities
 notebooks/           # research + portfolio notebooks
 tests/models/        # phase4 benchmark/evaluation/tracking tests
+tests/app/           # streamlit app artifact loader + page smoke tests
 docs/                # roadmap
 ```
 

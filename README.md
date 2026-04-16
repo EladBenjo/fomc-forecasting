@@ -9,56 +9,71 @@ A portfolio project converting original research notebooks into a production-gra
 ## What it does
 
 1. **Ingests** Fed speeches (1996-present) and FOMC policy documents (statements, minutes)
-2. **Extracts text features** - hawkish/dovish sentiment via ZettaQuant central bank classifiers, meeting-over-meeting novelty (TF-IDF cosine distance), and topic diagnostics
-3. **Builds and versions** inflation expectation targets from FRED (raw + transformed local artifacts)
-4. **Trains** walk-forward models - baseline vs exogenous SARIMAX -> XGBoost - with no lookahead leakage
-5. **Serves** a Streamlit demo with pipeline status, feature explorer, model results, and a RAG chat interface grounded in source documents
+2. **Extracts text features** such as hawkish/dovish sentiment, lexical novelty, and document-level counts
+3. **Builds and versions** inflation expectation targets from FRED
+4. **Creates leak-free modeling datasets** with strict no-lookahead alignment
+5. **Runs walk-forward forecasting benchmarks** on versioned artifacts
+6. **Serves a Streamlit MVP** for pipeline status, feature exploration, and model results
 
 ---
 
-## End deliverables
+## Architecture Overview
 
-| Deliverable | Description |
-| --- | --- |
-| `notebooks/` | End-to-end pipeline narrative (EDA -> features -> models) |
-| Streamlit app | 4-page interactive demo (status, features, models, RAG chat) |
+This project pulls text from public Federal Reserve sources, stores and normalizes the data, computes document-level NLP features, aligns them with inflation expectation targets from FRED, runs leakage-safe forecasting pipelines, and exposes outputs through a read-only Streamlit interface.
 
----
+```mermaid
+flowchart LR
+    A[Federal Reserve<br/>Speeches + FOMC Documents]
+    B[FRED<br/>Inflation Expectation Series]
+    C[ZettaQuant API<br/>Sentence Classifiers]
 
-## Architecture
+    A --> D[Ingest Pipeline<br/>Discovery / Fetch / Parse / Chunk]
+    D --> E[Unified Storage<br/>SQLite + Raw Files + Parquet]
 
-```text
-federalreserve.gov
-    |
-    v
-Discovery -> Fetch -> Parse -> Chunk
-    |
-    v
-data/catalog/fedtext.db          <- unified SQLite (speeches + documents + chunks)
-    |
-    |-- text features             -> data/features/doc_level/features.parquet
-    |      sentiment (ZettaQuant API: relevancy + stance)
-    |      novelty   (TF-IDF cosine distance)
-    |      topics    (diagnostic only)
-    |
-    |-- FRED targets              -> data/targets/t5yie_raw.parquet
-    |                           -> data/targets/t5yie_diff1.parquet
-    |                           -> data/targets/manifests/*.json + dataset_registry.sqlite3
-    |
-    |-- model dataset (Phase 3)  -> data/targets/model_dataset_t5yie.parquet
-    |                           -> data/splits/time_splits.json
-    |                           -> data/targets/manifests/model-dataset-t5yie-*.json
-    |                           -> data/targets/model_dataset_registry.sqlite3
-    |
-    |-- model runs (Phase 4)     -> data/models/baselines/t5yie/<run_version>/*
-    |                           -> data/models/baselines/manifests/<run_version>.json
-    |                           -> data/models/baselines/run_registry.sqlite3
-    |
-    `-- embeddings (sqlite-vec)   <- RAG retrieval
-            |
-            v
-        Streamlit app / Jupyter notebooks
+    E --> F[Feature Engineering<br/>Sentiment / Novelty / Counts]
+    C --> F
+
+    B --> G[Target Pipeline<br/>Fetch / Transform / Version]
+    F --> H[Dataset Builder<br/>Monthly Alignment / No-Lookahead Splits]
+    G --> H
+
+    H --> I[Modeling Layer<br/>SARIMAX Baselines / XGBoost Next]
+    E --> J[RAG Retrieval Layer<br/>Planned]
+
+    I --> K[Streamlit App MVP<br/>Status / Features / Models]
+    J --> K
 ```
+
+### Working now
+
+- Fed speeches and FOMC documents ingest into a unified SQLite-backed pipeline
+- `T5YIE` target building, monthly dataset construction, and SARIMAX benchmarking are operational
+- The Streamlit MVP reads existing artifacts and surfaces status, feature views, and model outputs
+
+---
+
+## Why this project is not just a notebook
+
+- **Versioned data artifacts** for targets, datasets, and model runs
+- **Strict no-lookahead alignment** between text features and target periods
+- **Walk-forward evaluation** for forecasting benchmarks
+- **Resumable feature pipelines** with checkpointing and caching
+- **A read-only Streamlit app** connected to real pipeline outputs
+
+---
+
+## Current deliverables
+
+| Deliverable | Status | Description |
+| --- | --- | --- |
+| `notebooks/` | available | End-to-end research and portfolio narrative |
+| Ingest pipeline | done | Speeches + FOMC documents into unified storage |
+| Feature pipeline | done | Sentiment, novelty, and document-level features |
+| Target pipeline | done for `T5YIE` | Versioned FRED fetch + transforms |
+| Dataset builder | done for `T5YIE` | Monthly alignment + fixed time splits |
+| Baseline models | done | Walk-forward SARIMAX benchmark pipeline |
+| Streamlit app | MVP in progress | Read-only artifact explorer wired to current outputs |
+| RAG layer | planned | Retrieval layer not implemented yet |
 
 ---
 

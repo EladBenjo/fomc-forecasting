@@ -28,6 +28,7 @@ import pandas as pd
 from fedtext.common.db import get_connection
 from fedtext.common.paths import FEATURES_DIR, FEDTEXT_DB, REPO_ROOT
 from fedtext.text.cleaning.normalizer import normalize, split_sentences
+from fedtext.text.features import document_features as doc_features
 from fedtext.text.features import novelty as novelty_mod
 from fedtext.text.features import sentiment as sentiment_mod
 from fedtext.text.features.versioning import (
@@ -59,6 +60,9 @@ _OUTPUT_COLUMNS = [
     "n_dovish",
     "n_neutral",
     "n_target_sentences",
+    "text_length_words",
+    "role",
+    "target_sentences_ratio",
     "novelty",
 ]
 _SOURCE_TYPE_TO_ROW_LABEL = {
@@ -79,10 +83,13 @@ def _load_speeches(conn, limit: int | None) -> list[dict]:
             id          AS doc_id,
             'speech'    AS source_type,
             speech_date AS date,
-            speech_text AS text
+            speech_text AS text,
+            speaker     AS speaker,
+            title       AS title,
+            event       AS event
         FROM speeches
-        WHERE text IS NOT NULL AND text != ''
-        ORDER BY date
+        WHERE speech_text IS NOT NULL AND speech_text != ''
+        ORDER BY speech_date
     """
     if limit:
         sql += f" LIMIT {limit}"
@@ -96,9 +103,12 @@ def _load_documents(conn, limit: int | None) -> list[dict]:
             id              AS doc_id,
             'document'      AS source_type,
             meeting_date    AS date,
-            doc_text        AS text
+            doc_text        AS text,
+            NULL            AS speaker,
+            NULL            AS title,
+            NULL            AS event
         FROM documents
-        WHERE text IS NOT NULL AND text != ''
+        WHERE doc_text IS NOT NULL AND doc_text != ''
         ORDER BY meeting_date
     """
     if limit:
@@ -132,13 +142,38 @@ def _init_state_schema(conn: sqlite3.Connection) -> None:
             n_dovish           INTEGER NOT NULL,
             n_neutral          INTEGER NOT NULL,
             n_target_sentences INTEGER NOT NULL,
+            text_length_words  INTEGER,
+            role               TEXT,
+            target_sentences_ratio REAL,
             novelty            REAL,
             updated_at         TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             PRIMARY KEY (source_type, doc_id)
         )
         """
     )
+    _migrate_state_schema(conn)
     conn.commit()
+
+
+def _checkpoint_columns(conn: sqlite3.Connection) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({_CHECKPOINT_TABLE})").fetchall()
+    return {str(r[1]) for r in rows}
+
+
+def _migrate_state_schema(conn: sqlite3.Connection) -> None:
+    columns = _checkpoint_columns(conn)
+    if "text_length_words" not in columns:
+        conn.execute(
+            f"ALTER TABLE {_CHECKPOINT_TABLE} ADD COLUMN text_length_words INTEGER"
+        )
+    if "role" not in columns:
+        conn.execute(
+            f"ALTER TABLE {_CHECKPOINT_TABLE} ADD COLUMN role TEXT"
+        )
+    if "target_sentences_ratio" not in columns:
+        conn.execute(
+            f"ALTER TABLE {_CHECKPOINT_TABLE} ADD COLUMN target_sentences_ratio REAL"
+        )
 
 
 def _reset_checkpoint(conn: sqlite3.Connection, source_types: list[str]) -> None:
@@ -157,6 +192,8 @@ def _load_completed_keys(conn: sqlite3.Connection, source_types: list[str]) -> s
         SELECT source_type, doc_id
         FROM {_CHECKPOINT_TABLE}
         WHERE source_type IN ({placeholders})
+          AND text_length_words IS NOT NULL
+          AND target_sentences_ratio IS NOT NULL
         """,
         source_types,
     ).fetchall()
@@ -175,9 +212,12 @@ def _upsert_checkpoint_row(conn: sqlite3.Connection, row: dict) -> None:
             n_dovish,
             n_neutral,
             n_target_sentences,
+            text_length_words,
+            role,
+            target_sentences_ratio,
             novelty
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_type, doc_id)
         DO UPDATE SET
             date = excluded.date,
@@ -186,6 +226,9 @@ def _upsert_checkpoint_row(conn: sqlite3.Connection, row: dict) -> None:
             n_dovish = excluded.n_dovish,
             n_neutral = excluded.n_neutral,
             n_target_sentences = excluded.n_target_sentences,
+            text_length_words = excluded.text_length_words,
+            role = excluded.role,
+            target_sentences_ratio = excluded.target_sentences_ratio,
             novelty = excluded.novelty,
             updated_at = CURRENT_TIMESTAMP
         """,
@@ -198,6 +241,9 @@ def _upsert_checkpoint_row(conn: sqlite3.Connection, row: dict) -> None:
             int(row["n_dovish"]),
             int(row["n_neutral"]),
             int(row["n_target_sentences"]),
+            int(row["text_length_words"]),
+            row["role"],
+            float(row["target_sentences_ratio"]),
             row["novelty"],
         ),
     )
@@ -220,6 +266,9 @@ def _load_checkpoint_frame(
             n_dovish,
             n_neutral,
             n_target_sentences,
+            text_length_words,
+            role,
+            target_sentences_ratio,
             novelty
         FROM {_CHECKPOINT_TABLE}
         WHERE source_type IN ({placeholders})
@@ -325,6 +374,7 @@ def run(
             text = normalize(rec["text"])
             sents = split_sentences(text)
             result = sentiment_mod.score_document(text, sents, client=client)
+            total_sentences_count = len(sents)
 
             row = {
                 "doc_id": rec["doc_id"],
@@ -335,6 +385,17 @@ def run(
                 "n_dovish": result.n_dovish,
                 "n_neutral": result.n_neutral,
                 "n_target_sentences": result.n_target_sentences,
+                "text_length_words": doc_features.count_words(text),
+                "role": doc_features.infer_role(
+                    source_type=str(rec["source_type"]),
+                    speaker=rec.get("speaker"),
+                    title=rec.get("title"),
+                    event=rec.get("event"),
+                ),
+                "target_sentences_ratio": doc_features.compute_target_sentences_ratio(
+                    n_target_sentences=result.n_target_sentences,
+                    total_sentences_count=total_sentences_count,
+                ),
                 "novelty": novelty_map.get(rec["doc_id"], float("nan")),
             }
             _upsert_checkpoint_row(state_conn, row)

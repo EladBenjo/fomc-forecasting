@@ -8,10 +8,10 @@ A portfolio project converting original research notebooks into a production-gra
 
 ## What it does
 
-1. **Ingests** Fed speeches (1996-present) and FOMC policy documents (statements, minutes)
-2. **Extracts text features** such as hawkish/dovish sentiment, lexical novelty, and document-level counts
-3. **Builds and versions** inflation expectation targets from FRED
-4. **Creates leak-free modeling datasets** with strict no-lookahead alignment
+1. **Discovers and fetches** relevant Federal Reserve speeches and FOMC documents
+2. **Processes text into sentence-level inputs** and calls ZettaQuant classifiers to build document-level features
+3. **Builds and versions** inflation expectation target series from FRED
+4. **Transforms the target series for modeling** and creates leak-free train/validation/test datasets
 5. **Runs walk-forward forecasting benchmarks** on versioned artifacts
 6. **Serves a Streamlit MVP** for pipeline status, feature exploration, and model results
 
@@ -19,35 +19,35 @@ A portfolio project converting original research notebooks into a production-gra
 
 ## Architecture Overview
 
-This project pulls text from public Federal Reserve sources, stores and normalizes the data, computes document-level NLP features, aligns them with inflation expectation targets from FRED, runs leakage-safe forecasting pipelines, and exposes outputs through a read-only Streamlit interface.
+This project discovers relevant FOMC communication pages, fetches the underlying text and metadata, processes the text into sentence-level inputs, uses ZettaQuant classifiers to build document-level feature artifacts, fetches and transforms inflation expectation series from FRED, joins both streams into modeling datasets, and exposes the resulting artifacts through a read-only Streamlit interface.
 
 ```mermaid
 flowchart LR
-    A[Federal Reserve<br/>Speeches + FOMC Documents]
+    A[Federal Reserve<br/>Relevant FOMC Pages]
     B[FRED<br/>Inflation Expectation Series]
-    C[ZettaQuant API<br/>Sentence Classifiers]
 
-    A --> D[Ingest Pipeline<br/>Discovery / Fetch / Parse / Chunk]
-    D --> E[Unified Storage<br/>SQLite + Raw Files + Parquet]
+    A --> D[Scraping Pipeline<br/>Discover Relevant Pages]
+    D --> E[Fetch Text + Metadata<br/>Speeches / Statements / Minutes]
+    E --> S[Text Processing<br/>Normalize / Sentence Split]
+    S --> Z[ZettaQuant API<br/>Sentence-Level Classifiers]
+    Z --> F[Feature Artifact<br/>features.parquet<br/>Sentiment + Local Features]
 
-    E --> F[Feature Engineering<br/>Sentiment / Novelty / Counts]
-    C --> F
-
-    B --> G[Target Pipeline<br/>Fetch / Transform / Version]
-    F --> H[Dataset Builder<br/>Monthly Alignment / No-Lookahead Splits]
+    B --> G[Target Pipeline<br/>Fetch + Transform for Stationarity]
+    F --> H[Dataset Builder<br/>Join Features + Target<br/>Train / Validation / Test Splits]
     G --> H
 
     H --> I[Modeling Layer<br/>SARIMAX Baselines / XGBoost Next]
+    H --> K[Streamlit App MVP<br/>Status / Features / Models]
+    I --> K
     E --> J[RAG Retrieval Layer<br/>Planned]
-
-    I --> K[Streamlit App MVP<br/>Status / Features / Models]
     J --> K
 ```
 
 ### Working now
 
-- Fed speeches and FOMC documents ingest into a unified SQLite-backed pipeline
-- `T5YIE` target building, monthly dataset construction, and SARIMAX benchmarking are operational
+- Relevant Fed speeches and FOMC documents are discovered, fetched, and stored through a unified pipeline
+- Text is processed into sentence-level inputs and converted into document-level feature artifacts in `features.parquet`
+- `T5YIE` target building, transformation, dataset construction, and SARIMAX benchmarking are operational
 - The Streamlit MVP reads existing artifacts and surfaces status, feature views, and model outputs
 
 ---
@@ -55,6 +55,7 @@ flowchart LR
 ## Why this project is not just a notebook
 
 - **Versioned data artifacts** for targets, datasets, and model runs
+- **Explicit sentence-level NLP flow** from raw text to document-level features
 - **Strict no-lookahead alignment** between text features and target periods
 - **Walk-forward evaluation** for forecasting benchmarks
 - **Resumable feature pipelines** with checkpointing and caching
@@ -67,10 +68,10 @@ flowchart LR
 | Deliverable | Status | Description |
 | --- | --- | --- |
 | `notebooks/` | available | End-to-end research and portfolio narrative |
-| Ingest pipeline | done | Speeches + FOMC documents into unified storage |
-| Feature pipeline | done | Sentiment, novelty, and document-level features |
-| Target pipeline | done for `T5YIE` | Versioned FRED fetch + transforms |
-| Dataset builder | done for `T5YIE` | Monthly alignment + fixed time splits |
+| Scraping pipeline | done | Discovery + fetch of speeches and FOMC documents into unified storage |
+| Feature pipeline | done | Sentence-level ZettaQuant inference + local document-level features |
+| Target pipeline | done for `T5YIE` | Versioned FRED fetch + transform pipeline |
+| Dataset builder | done for `T5YIE` | Joined feature/target dataset with fixed time splits |
 | Baseline models | done | Walk-forward SARIMAX benchmark pipeline |
 | Streamlit app | MVP in progress | Read-only artifact explorer wired to current outputs |
 | RAG layer | planned | Retrieval layer not implemented yet |
@@ -141,6 +142,10 @@ Tradeoffs (and why these choices were made):
 **Why TF-IDF, not embeddings:** We want lexical novelty - new vocabulary and new policy phrases - not semantic similarity. Embedding-based cosine similarity would score a paraphrased statement as nearly identical to the original even when new terminology was introduced. That vocabulary shift is exactly the signal we want to capture.
 
 **Computed per source type:** Each statement is compared to the previous statement; each speech to the previous speech. Cross-type comparison (statement vs. speech) would be noise.
+
+### Additional local features
+
+In addition to API-based sentiment labels, the project computes local document-level features such as novelty and count-based indicators that are stored together in the feature artifact.
 
 ### Topics - intentionally omitted from final model
 

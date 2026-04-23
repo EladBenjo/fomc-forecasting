@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from datasets.build_dataset.alignment import aggregate_features_monthly
 import datasets.build_dataset.builder as builder_module
 from datasets.build_dataset import BuildDatasetConfig, build_model_dataset
 from datasets.schema.fields import MODEL_DATASET_COLUMNS
@@ -29,6 +30,8 @@ def _make_base_feature_rows() -> list[dict]:
             "n_neutral": 0,
             "n_target_sentences": 1,
             "novelty": 0.20,
+            "text_length_words": 120,
+            "role": None,
         },
         {
             "doc_id": 2,
@@ -40,6 +43,8 @@ def _make_base_feature_rows() -> list[dict]:
             "n_neutral": 1,
             "n_target_sentences": 1,
             "novelty": 0.10,
+            "text_length_words": 80,
+            "role": "Chair-Man",
         },
         {
             "doc_id": 3,
@@ -51,6 +56,8 @@ def _make_base_feature_rows() -> list[dict]:
             "n_neutral": 0,
             "n_target_sentences": 1,
             "novelty": 0.30,
+            "text_length_words": 95,
+            "role": "Vice Chairman",
         },
         {
             "doc_id": 4,
@@ -62,6 +69,8 @@ def _make_base_feature_rows() -> list[dict]:
             "n_neutral": 0,
             "n_target_sentences": 1,
             "novelty": 0.40,
+            "text_length_words": 140,
+            "role": None,
         },
     ]
 
@@ -117,7 +126,24 @@ def test_build_model_dataset_monthly_alignment_and_missing_semantics(tmp_path: P
     # 2017-03 uses 2017-02 feature month, which has no docs -> NaNs preserved.
     march_row = out_df.loc[out_df["target_month"] == "2017-03"].iloc[0]
     assert pd.isna(march_row["hawkish_score"])
+    assert pd.isna(march_row["text_length_words_max"])
+    assert pd.isna(march_row["role_share_chairman"])
+    assert pd.isna(march_row["hawkish_score_max_abs_signed_30d"])
     assert march_row["missing_period_reason"] == "no_docs_month"
+
+    jan_row = out_df.loc[out_df["target_month"] == "2017-01"].iloc[0]
+    assert jan_row["text_length_words_max"] == 120
+    assert jan_row["role_share_chairman"] == pytest.approx(1.0)
+    assert pd.isna(jan_row["hawkish_score_max_abs_signed_7d"])
+    assert jan_row["hawkish_score_max_abs_signed_14d"] == pytest.approx(0.0)
+    assert jan_row["hawkish_score_max_abs_signed_30d"] == pytest.approx(1.0)
+
+    feb_row = out_df.loc[out_df["target_month"] == "2017-02"].iloc[0]
+    assert feb_row["text_length_words_max"] == 95
+    assert feb_row["role_share_chairman"] == pytest.approx(0.0)
+    assert pd.isna(feb_row["hawkish_score_max_abs_signed_7d"])
+    assert pd.isna(feb_row["hawkish_score_max_abs_signed_14d"])
+    assert feb_row["hawkish_score_max_abs_signed_30d"] == pytest.approx(-1.0)
 
     # No-lookahead: feature month is always strictly earlier than target month.
     target_month = pd.PeriodIndex(out_df["target_month"], freq="M")
@@ -180,6 +206,8 @@ def test_build_model_dataset_fixed_split_boundaries(tmp_path: Path):
                 "n_neutral": 0,
                 "n_target_sentences": 1,
                 "novelty": 0.2,
+                "text_length_words": 100,
+                "role": "Chairman",
             },
             {
                 "doc_id": 2,
@@ -191,6 +219,8 @@ def test_build_model_dataset_fixed_split_boundaries(tmp_path: Path):
                 "n_neutral": 0,
                 "n_target_sentences": 1,
                 "novelty": 0.2,
+                "text_length_words": 90,
+                "role": "Vice Chairman",
             },
             {
                 "doc_id": 3,
@@ -202,6 +232,8 @@ def test_build_model_dataset_fixed_split_boundaries(tmp_path: Path):
                 "n_neutral": 0,
                 "n_target_sentences": 1,
                 "novelty": 0.3,
+                "text_length_words": 75,
+                "role": "Governor",
             },
             {
                 "doc_id": 4,
@@ -213,6 +245,8 @@ def test_build_model_dataset_fixed_split_boundaries(tmp_path: Path):
                 "n_neutral": 0,
                 "n_target_sentences": 1,
                 "novelty": 0.3,
+                "text_length_words": 85,
+                "role": "Chairman",
             },
         ]
     )
@@ -238,7 +272,10 @@ def test_build_model_dataset_fails_on_missing_required_columns(tmp_path: Path):
     _write_parquet(target_df, config.target_path)
     _write_parquet(features_df, config.features_path)
 
-    with pytest.raises(ValueError, match="missing required columns"):
+    with pytest.raises(
+        ValueError,
+        match="missing required input columns for selected monthly features",
+    ):
         build_model_dataset(config)
 
 
@@ -277,6 +314,82 @@ def test_build_model_dataset_fails_on_invalid_split_config(tmp_path: Path):
 
     with pytest.raises(ValueError, match="train_end must be before val_start"):
         build_model_dataset(bad_config)
+
+
+def test_aggregate_features_monthly_event_features_tie_break_and_empty_windows():
+    features_df = pd.DataFrame(
+        [
+            {"doc_id": 1, "date": "2020-01-30", "hawkish_score": 0.9},
+            {"doc_id": 2, "date": "2020-01-31", "hawkish_score": -0.9},
+            {"doc_id": 3, "date": "2020-01-31", "hawkish_score": 0.9},
+            {"doc_id": 4, "date": "2020-01-05", "hawkish_score": -0.4},
+            {"doc_id": 5, "date": "2020-02-01", "hawkish_score": -0.7},
+            {"doc_id": 6, "date": "2020-02-10", "hawkish_score": 0.2},
+        ]
+    )
+    features_df["date"] = pd.to_datetime(features_df["date"])
+
+    monthly = aggregate_features_monthly(
+        features_df,
+        monthly_feature_columns=(
+            "hawkish_score_max_abs_signed_7d",
+            "hawkish_score_max_abs_signed_14d",
+            "hawkish_score_max_abs_signed_30d",
+        ),
+    )
+
+    jan = monthly.loc[monthly["feature_month"] == pd.Period("2020-01", freq="M")].iloc[0]
+    assert jan["hawkish_score_max_abs_signed_7d"] == pytest.approx(0.9)
+    assert jan["hawkish_score_max_abs_signed_14d"] == pytest.approx(0.9)
+    assert jan["hawkish_score_max_abs_signed_30d"] == pytest.approx(0.9)
+
+    feb = monthly.loc[monthly["feature_month"] == pd.Period("2020-02", freq="M")].iloc[0]
+    assert pd.isna(feb["hawkish_score_max_abs_signed_7d"])
+    assert pd.isna(feb["hawkish_score_max_abs_signed_14d"])
+    assert feb["hawkish_score_max_abs_signed_30d"] == pytest.approx(-0.7)
+
+
+def test_build_model_dataset_selected_feature_dependencies_and_legacy_subset_compat(tmp_path: Path):
+    config = _build_config(tmp_path)
+    config.write_manifest_files = False
+
+    target_df = _make_alignment_target_df()
+    features_df = pd.DataFrame(_make_base_feature_rows()).drop(columns=["text_length_words", "role"])
+    features_df["date"] = pd.to_datetime(features_df["date"])
+
+    _write_parquet(target_df, config.target_path)
+    _write_parquet(features_df, config.features_path)
+
+    with pytest.raises(
+        ValueError,
+        match="missing required input columns for selected monthly features",
+    ):
+        build_model_dataset(config)
+
+    legacy_columns = (
+        "hawkish_score",
+        "novelty",
+        "n_hawkish",
+        "n_dovish",
+        "n_neutral",
+        "n_target_sentences",
+        "doc_count",
+    )
+    config.monthly_feature_columns = legacy_columns
+
+    out_path = build_model_dataset(config)
+    out_df = pd.read_parquet(out_path)
+    expected_columns = (
+        "target_month",
+        "date",
+        "feature_month_used",
+        "t5yie_diff1",
+        "t5yie_diff1_abs_mean",
+        "t5yie_obs",
+        *legacy_columns,
+        "missing_period_reason",
+    )
+    assert tuple(out_df.columns) == expected_columns
 
 
 def test_main_cli_builds_dataset_and_split_outputs(tmp_path: Path):

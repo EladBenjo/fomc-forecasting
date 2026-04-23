@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import re
 
 import numpy as np
 import pandas as pd
@@ -12,7 +13,6 @@ from datasets.schema.fields import (
     DOC_ID_COLUMN,
     FEATURE_MONTH_COLUMN,
     FEATURE_MONTH_USED_COLUMN,
-    FEATURE_REQUIRED_COLUMNS,
     MISSING_PERIOD_REASON_COLUMN,
     MISSING_REASON_NO_DOCS_MONTH,
     MISSING_REASON_PRE_FEATURE_HISTORY,
@@ -34,13 +34,137 @@ _BASE_MONTHLY_AGGREGATIONS: dict[str, tuple[str, str]] = {
     "n_neutral": ("n_neutral", "sum"),
     "n_target_sentences": ("n_target_sentences", "sum"),
     "doc_count": (DOC_ID_COLUMN, "count"),
+    "text_length_words_max": ("text_length_words", "max"),
 }
+
+_EVENT_WINDOWS: tuple[int, ...] = (7, 14, 30)
+_EVENT_FEATURE_COLUMNS: tuple[str, ...] = tuple(
+    f"hawkish_score_max_abs_signed_{days}d" for days in _EVENT_WINDOWS
+)
+_SUPPORTED_MONTHLY_FEATURE_COLUMNS: tuple[str, ...] = (
+    *tuple(_BASE_MONTHLY_AGGREGATIONS.keys()),
+    "role_share_chairman",
+    *_EVENT_FEATURE_COLUMNS,
+)
+
+_FEATURE_DEPENDENCY_COLUMNS: dict[str, tuple[str, ...]] = {
+    "hawkish_score": ("hawkish_score",),
+    "novelty": ("novelty",),
+    "n_hawkish": ("n_hawkish",),
+    "n_dovish": ("n_dovish",),
+    "n_neutral": ("n_neutral",),
+    "n_target_sentences": ("n_target_sentences",),
+    "doc_count": (DOC_ID_COLUMN,),
+    "text_length_words_max": ("text_length_words",),
+    "role_share_chairman": (DOC_ID_COLUMN, SOURCE_TYPE_COLUMN, "role"),
+    "hawkish_score_max_abs_signed_7d": (DOC_ID_COLUMN, DATE_COLUMN, "hawkish_score"),
+    "hawkish_score_max_abs_signed_14d": (DOC_ID_COLUMN, DATE_COLUMN, "hawkish_score"),
+    "hawkish_score_max_abs_signed_30d": (DOC_ID_COLUMN, DATE_COLUMN, "hawkish_score"),
+}
+
+_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _require_columns(df: pd.DataFrame, required: Sequence[str], *, frame_name: str) -> None:
     missing = [col for col in required if col not in df.columns]
     if missing:
         raise ValueError(f"{frame_name} is missing required columns: {missing}")
+
+
+def _validate_selected_feature_dependencies(
+    features_df: pd.DataFrame,
+    selected: Sequence[str],
+) -> None:
+    missing_by_feature: dict[str, list[str]] = {}
+    for feature_col in selected:
+        required = _FEATURE_DEPENDENCY_COLUMNS.get(feature_col, ())
+        missing = [col for col in required if col not in features_df.columns]
+        if missing:
+            missing_by_feature[feature_col] = missing
+
+    if not missing_by_feature:
+        return
+
+    details = "; ".join(
+        f"{feature_col}: {missing_cols}"
+        for feature_col, missing_cols in missing_by_feature.items()
+    )
+    raise ValueError(
+        "features_df is missing required input columns for selected monthly features: "
+        f"{details}"
+    )
+
+
+def _normalize_role_for_chairman_share(value: object) -> str | None:
+    if pd.isna(value):
+        return None
+    text = str(value).strip().lower().replace("-", " ").replace("_", " ")
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+    if not text:
+        return None
+    if text.replace(" ", "") == "chairman":
+        return "chairman"
+    return text
+
+
+def _aggregate_role_share_chairman(features_monthly_source: pd.DataFrame) -> pd.DataFrame:
+    speech_rows = features_monthly_source[
+        features_monthly_source[SOURCE_TYPE_COLUMN].astype(str).str.upper().str.strip() == "SPEECH"
+    ].copy()
+    if speech_rows.empty:
+        return pd.DataFrame(columns=[FEATURE_MONTH_COLUMN, "role_share_chairman"])
+
+    speech_rows["role_normalized"] = speech_rows["role"].map(_normalize_role_for_chairman_share)
+    monthly = (
+        speech_rows.groupby(FEATURE_MONTH_COLUMN)
+        .agg(
+            speech_doc_count=(DOC_ID_COLUMN, "count"),
+            chairman_doc_count=("role_normalized", lambda s: (s == "chairman").sum()),
+        )
+        .reset_index()
+    )
+    monthly["role_share_chairman"] = np.where(
+        monthly["speech_doc_count"] > 0,
+        monthly["chairman_doc_count"] / monthly["speech_doc_count"],
+        np.nan,
+    )
+    return monthly[[FEATURE_MONTH_COLUMN, "role_share_chairman"]]
+
+
+def _aggregate_hawkish_score_max_abs_signed(
+    features_monthly_source: pd.DataFrame,
+    *,
+    window_days: int,
+) -> pd.DataFrame:
+    value_col = f"hawkish_score_max_abs_signed_{window_days}d"
+    rows: list[dict[str, object]] = []
+    event_source = features_monthly_source[
+        [FEATURE_MONTH_COLUMN, DATE_COLUMN, DOC_ID_COLUMN, "hawkish_score"]
+    ].copy()
+
+    for feature_month, month_df in event_source.groupby(FEATURE_MONTH_COLUMN, sort=True):
+        month_end = feature_month.to_timestamp(how="end").normalize()
+        window_start = month_end - pd.Timedelta(days=window_days - 1)
+        window_df = month_df[
+            (month_df[DATE_COLUMN] >= window_start) & (month_df[DATE_COLUMN] <= month_end)
+        ].copy()
+
+        if window_df.empty:
+            rows.append({FEATURE_MONTH_COLUMN: feature_month, value_col: np.nan})
+            continue
+
+        winner = (
+            window_df.assign(abs_score=window_df["hawkish_score"].abs())
+            .sort_values(
+                ["abs_score", DATE_COLUMN, DOC_ID_COLUMN],
+                ascending=[False, False, False],
+                kind="mergesort",
+            )
+            .iloc[0]
+        )
+        rows.append({FEATURE_MONTH_COLUMN: feature_month, value_col: float(winner["hawkish_score"])})
+
+    return pd.DataFrame(rows).sort_values(FEATURE_MONTH_COLUMN, kind="mergesort").reset_index(drop=True)
 
 
 def normalize_dates(
@@ -74,7 +198,7 @@ def resolve_monthly_feature_columns(columns: Sequence[str] | None = None) -> tup
         return MONTHLY_FEATURE_COLUMNS
 
     requested = tuple(columns)
-    invalid = [col for col in requested if col not in _BASE_MONTHLY_AGGREGATIONS]
+    invalid = [col for col in requested if col not in _SUPPORTED_MONTHLY_FEATURE_COLUMNS]
     if invalid:
         raise ValueError(f"Unsupported monthly feature columns requested: {invalid}")
     if len(set(requested)) != len(requested):
@@ -119,21 +243,43 @@ def aggregate_features_monthly(
     monthly_feature_columns: Sequence[str] | None = None,
 ) -> pd.DataFrame:
     """Aggregate document-level features into monthly feature-month rows."""
-    _require_columns(features_df, FEATURE_REQUIRED_COLUMNS, frame_name="features_df")
     selected = resolve_monthly_feature_columns(monthly_feature_columns)
+    _validate_selected_feature_dependencies(features_df, selected)
+    _require_columns(features_df, [DATE_COLUMN], frame_name="features_df")
 
-    agg_kwargs = {
-        out_col: _BASE_MONTHLY_AGGREGATIONS[out_col]
-        for out_col in _BASE_MONTHLY_AGGREGATIONS
-    }
-    out = (
-        features_df.assign(**{FEATURE_MONTH_COLUMN: features_df[DATE_COLUMN].dt.to_period("M")})
-        .groupby(FEATURE_MONTH_COLUMN)
-        .agg(**agg_kwargs)
-        .reset_index()
-        .sort_values(FEATURE_MONTH_COLUMN, kind="mergesort")
-        .reset_index(drop=True)
-    )
+    monthly_source = features_df.assign(**{FEATURE_MONTH_COLUMN: features_df[DATE_COLUMN].dt.to_period("M")})
+    base_selected = [col for col in selected if col in _BASE_MONTHLY_AGGREGATIONS]
+    if base_selected:
+        agg_kwargs = {out_col: _BASE_MONTHLY_AGGREGATIONS[out_col] for out_col in base_selected}
+        out = (
+            monthly_source.groupby(FEATURE_MONTH_COLUMN)
+            .agg(**agg_kwargs)
+            .reset_index()
+            .sort_values(FEATURE_MONTH_COLUMN, kind="mergesort")
+            .reset_index(drop=True)
+        )
+    else:
+        out = (
+            monthly_source[[FEATURE_MONTH_COLUMN]]
+            .drop_duplicates()
+            .sort_values(FEATURE_MONTH_COLUMN, kind="mergesort")
+            .reset_index(drop=True)
+        )
+
+    if "role_share_chairman" in selected:
+        role_share = _aggregate_role_share_chairman(monthly_source)
+        out = out.merge(role_share, on=FEATURE_MONTH_COLUMN, how="left")
+
+    for event_window in _EVENT_WINDOWS:
+        event_col = f"hawkish_score_max_abs_signed_{event_window}d"
+        if event_col not in selected:
+            continue
+        event_monthly = _aggregate_hawkish_score_max_abs_signed(
+            monthly_source,
+            window_days=event_window,
+        )
+        out = out.merge(event_monthly, on=FEATURE_MONTH_COLUMN, how="left")
+
     if not out[FEATURE_MONTH_COLUMN].is_monotonic_increasing:
         raise ValueError("Monthly feature index is not monotonic increasing.")
     return out[[FEATURE_MONTH_COLUMN, *selected]]
@@ -298,4 +444,3 @@ def validate_expected_rows(
 def validate_feature_source_column(features_df: pd.DataFrame) -> None:
     """Guard against accidental schema drift for source_type."""
     _require_columns(features_df, [SOURCE_TYPE_COLUMN], frame_name="features_df")
-

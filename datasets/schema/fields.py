@@ -46,6 +46,11 @@ MONTHLY_FEATURE_COLUMNS: Final[tuple[str, ...]] = (
     "n_neutral",
     "n_target_sentences",
     "doc_count",
+    "text_length_words_max",
+    "role_share_chairman",
+    "hawkish_score_max_abs_signed_7d",
+    "hawkish_score_max_abs_signed_14d",
+    "hawkish_score_max_abs_signed_30d",
 )
 
 MODEL_DATASET_COLUMNS: Final[tuple[str, ...]] = (
@@ -58,4 +63,3 @@ MODEL_DATASET_COLUMNS: Final[tuple[str, ...]] = (
     *MONTHLY_FEATURE_COLUMNS,
     MISSING_PERIOD_REASON_COLUMN,
 )
-

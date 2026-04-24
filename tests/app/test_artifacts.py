@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pandas as pd
@@ -23,6 +24,67 @@ def _write_features(repo_root: Path) -> Path:
     )
     df.to_parquet(path, index=False)
     return path
+
+
+def _write_backfilled_features(repo_root: Path) -> Path:
+    path = repo_root / "data" / "features" / "doc_level" / "features_backfilled_with_doc_features.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(
+        {
+            "doc_id": [10],
+            "source_type": ["speech"],
+            "date": pd.to_datetime(["2024-02-01"]),
+            "hawkish_score": [0.75],
+            "novelty": [0.8],
+            "text_length_words": [1200],
+            "role": ["Chairman"],
+            "target_sentences_ratio": [0.4],
+        }
+    )
+    df.to_parquet(path, index=False)
+    return path
+
+
+def _write_fedtext_catalog(repo_root: Path) -> Path:
+    db_path = repo_root / "data" / "catalog" / "fedtext.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE speeches (
+                id INTEGER PRIMARY KEY,
+                speech_date TEXT,
+                title TEXT,
+                speaker TEXT,
+                event TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE documents (
+                id INTEGER PRIMARY KEY,
+                doc_id TEXT,
+                category TEXT,
+                meeting_date TEXT,
+                meeting_label TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO speeches (id, speech_date, title, speaker, event)
+            VALUES (1, '2024-01-01', 'Speech Title', 'Chair X', 'Event A')
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO documents (id, doc_id, category, meeting_date, meeting_label)
+            VALUES (2, 'D1', 'minutes', '2024-01-01', 'FOMC Minutes')
+            """
+        )
+        conn.commit()
+    return db_path
 
 
 def _write_phase4_run(repo_root: Path, run_version: str, *, complete: bool = True) -> Path:
@@ -119,4 +181,34 @@ def test_load_features_dataframe(tmp_path: Path):
     out = artifacts.load_features_dataframe(repo_root=tmp_path)
     assert len(out) == 2
     assert out["date"].is_monotonic_increasing
+
+
+def test_load_features_dataframe_prefers_backfilled_when_available(tmp_path: Path):
+    _write_features(tmp_path)
+    _write_backfilled_features(tmp_path)
+
+    out = artifacts.load_features_dataframe(repo_root=tmp_path, prefer_backfilled=True)
+    assert len(out) == 1
+    assert out.attrs["source_path"].endswith("features_backfilled_with_doc_features.parquet")
+    assert "text_length_words" in out.columns
+
+    fallback = artifacts.load_features_dataframe(repo_root=tmp_path, prefer_backfilled=False)
+    assert len(fallback) == 2
+    assert fallback.attrs["source_path"].endswith("features.parquet")
+
+
+def test_load_optional_document_metadata_from_fedtext_db(tmp_path: Path):
+    _write_fedtext_catalog(tmp_path)
+
+    metadata = artifacts.load_optional_document_metadata(repo_root=tmp_path)
+    assert not metadata.empty
+    assert set(metadata["source_type"]) == {"speech", "document"}
+    assert {"title", "speaker", "event"}.issubset(metadata.columns)
+
+
+def test_get_artifact_freshness_includes_expected_rows(tmp_path: Path):
+    _write_features(tmp_path)
+    freshness = artifacts.get_artifact_freshness(repo_root=tmp_path)
+    assert {"artifact", "path", "exists", "updated_at_utc"}.issubset(freshness.columns)
+    assert "doc_features" in set(freshness["artifact"])
 

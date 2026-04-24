@@ -21,6 +21,15 @@ class _StreamlitStub(types.ModuleType):
     def __init__(self) -> None:
         super().__init__("streamlit")
 
+    def cache_data(self, fn=None, **kwargs):
+        if callable(fn):
+            return fn
+
+        def decorator(func):
+            return func
+
+        return decorator
+
     def columns(self, spec, **kwargs):
         count = spec if isinstance(spec, int) else len(spec)
         return [_StubCtx() for _ in range(count)]
@@ -35,6 +44,16 @@ class _StreamlitStub(types.ModuleType):
         if not options:
             return None
         return options[index]
+
+    def multiselect(self, label, options, default=None, **kwargs):
+        if default is not None:
+            return default
+        return list(options)
+
+    def slider(self, label, min_value=None, max_value=None, value=None, **kwargs):
+        if value is not None:
+            return value
+        return min_value
 
     def stop(self):
         raise RuntimeError("streamlit.stop() invoked in smoke test")
@@ -58,10 +77,11 @@ def test_streamlit_pages_import_without_crashing(monkeypatch):
     repo_root = Path(__file__).resolve().parents[2]
     targets = [
         repo_root / "app" / "main.py",
-        repo_root / "app" / "pages" / "1_Pipeline_Status.py",
-        repo_root / "app" / "pages" / "2_Feature_Explorer.py",
-        repo_root / "app" / "pages" / "3_Model_Results.py",
-        repo_root / "app" / "pages" / "4_RAG_Chat.py",
+        repo_root / "app" / "pages" / "1_Executive_Snapshot.py",
+        repo_root / "app" / "pages" / "2_Fed_Communication_Monitor.py",
+        repo_root / "app" / "pages" / "3_Events_and_Regime_Changes.py",
+        repo_root / "app" / "pages" / "4_Forecast_and_Model_Results.py",
+        repo_root / "app" / "pages" / "5_Feature_Drivers_and_Model_Interpretation.py",
     ]
 
     for idx, path in enumerate(targets):

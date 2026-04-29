@@ -7,12 +7,33 @@ import streamlit as st
 from app.lib.cached_data import (
     get_artifact_freshness,
     get_latest_phase4_payload,
+    get_latest_xgboost_payload,
     get_model_dataset_frame,
     get_status_snapshot,
 )
 from app.lib.dashboard_metrics import classify_policy_tone
 
 st.set_page_config(page_title="Fed Communication Dashboard", layout="wide")
+
+
+def _render_latest_forecast(label: str, payload, remediation_command: str) -> None:
+    st.caption(label)
+    if payload is None:
+        st.warning("Forecast artifacts unavailable.")
+        st.code(remediation_command)
+        return
+
+    preds = payload["predictions"]
+    if preds.empty:
+        st.warning("Predictions artifact exists but is empty.")
+        return
+
+    latest_pred = preds.sort_values("date", kind="mergesort").iloc[-1]
+    st.metric("Latest Forecast Date", str(latest_pred["date"].date()))
+    st.metric("Latest Model Prediction", f"{float(latest_pred['pred']):.3f}")
+    st.caption(f"Variant: `{latest_pred['model_variant']}`")
+    st.caption(f"Run: `{payload['run_version']}`")
+
 
 st.title("Federal Reserve Communication Dashboard")
 st.caption("Business Analyst / Economist workspace for communication signals and inflation-expectations forecasting.")
@@ -81,19 +102,11 @@ with left:
 
 with right:
     st.subheader("Latest Forecast Availability")
-    payload = get_latest_phase4_payload()
-    if payload is None:
-        st.warning("Forecast artifacts unavailable. Run `python -m models.baselines.sarimax`.")
-    else:
-        preds = payload["predictions"]
-        if preds.empty:
-            st.warning("Predictions artifact exists but is empty.")
-        else:
-            latest_pred = preds.sort_values("date", kind="mergesort").iloc[-1]
-            st.metric("Latest Forecast Date", str(latest_pred["date"].date()))
-            st.metric("Latest Model Prediction", f"{float(latest_pred['pred']):.3f}")
-            st.caption(f"Variant: {latest_pred['model_variant']}")
-            st.caption(f"Latest complete run: `{payload['run_version']}`")
+    forecast_cols = st.columns(2)
+    with forecast_cols[0]:
+        _render_latest_forecast("SARIMAX", get_latest_phase4_payload(), "python -m models.baselines.sarimax")
+    with forecast_cols[1]:
+        _render_latest_forecast("XGBoost", get_latest_xgboost_payload(), "python -m models.ml.xgboost")
 
 st.subheader("Data Freshness")
 freshness = get_artifact_freshness()

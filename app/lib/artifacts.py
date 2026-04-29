@@ -17,6 +17,7 @@ FEATURES_BACKFILLED_PATH_REL = Path("data/features/doc_level/features_backfilled
 MODEL_DATASET_PATH_REL = Path("data/targets/model_dataset_t5yie.parquet")
 SPLITS_PATH_REL = Path("data/splits/time_splits.json")
 PHASE4_RUNS_ROOT_REL = Path("data/models/baselines/t5yie")
+XGBOOST_RUNS_ROOT_REL = Path("data/models/xgboost/t5yie")
 FEDTEXT_CATALOG_DB_REL = Path("data/catalog/fedtext.db")
 SPEECHES_CATALOG_DB_REL = Path("data/catalog/speeches.db")
 DOCUMENTS_CATALOG_DB_REL = Path("data/catalog/catalog.sqlite")
@@ -28,6 +29,15 @@ PHASE4_REQUIRED_FILES: tuple[str, ...] = (
     "run_summary.json",
     "run_config.json",
 )
+XGBOOST_REQUIRED_FILES: tuple[str, ...] = (
+    "predictions.parquet",
+    "results_table.json",
+    "run_summary.json",
+    "run_config.json",
+    "feature_importance.json",
+    "feature_schema.json",
+    "model.json",
+)
 
 
 def remediation_commands() -> dict[str, str]:
@@ -36,6 +46,7 @@ def remediation_commands() -> dict[str, str]:
         "features": "python -m fedtext.text.features.pipeline",
         "model_dataset": "python -m datasets.build_dataset.builder",
         "phase4": "python -m models.baselines.sarimax",
+        "xgboost": "python -m models.ml.xgboost",
         "app": "streamlit run app/main.py",
     }
 
@@ -53,6 +64,7 @@ def _paths(repo_root: Path | None = None) -> dict[str, Path]:
         "model_dataset": root / MODEL_DATASET_PATH_REL,
         "splits": root / SPLITS_PATH_REL,
         "phase4_runs_root": root / PHASE4_RUNS_ROOT_REL,
+        "xgboost_runs_root": root / XGBOOST_RUNS_ROOT_REL,
         "fedtext_catalog_db": root / FEDTEXT_CATALOG_DB_REL,
         "speeches_catalog_db": root / SPEECHES_CATALOG_DB_REL,
         "documents_catalog_db": root / DOCUMENTS_CATALOG_DB_REL,
@@ -101,7 +113,32 @@ def list_phase4_runs(
     require_complete: bool = False,
 ) -> list[str]:
     """List phase4 run versions under data/models/baselines/t5yie."""
-    runs_root = _paths(repo_root)["phase4_runs_root"]
+    return _list_model_runs(
+        runs_root=_paths(repo_root)["phase4_runs_root"],
+        required_files=PHASE4_REQUIRED_FILES,
+        require_complete=require_complete,
+    )
+
+
+def list_xgboost_runs(
+    *,
+    repo_root: Path | None = None,
+    require_complete: bool = False,
+) -> list[str]:
+    """List XGBoost run versions under data/models/xgboost/t5yie."""
+    return _list_model_runs(
+        runs_root=_paths(repo_root)["xgboost_runs_root"],
+        required_files=XGBOOST_REQUIRED_FILES,
+        require_complete=require_complete,
+    )
+
+
+def _list_model_runs(
+    *,
+    runs_root: Path,
+    required_files: tuple[str, ...],
+    require_complete: bool,
+) -> list[str]:
     if not runs_root.exists() or not runs_root.is_dir():
         return []
 
@@ -109,7 +146,7 @@ def list_phase4_runs(
     for candidate in sorted(runs_root.iterdir(), key=lambda p: p.name):
         if not candidate.is_dir():
             continue
-        missing = missing_phase4_files(candidate)
+        missing = _missing_files(candidate, required_files)
         if require_complete and missing:
             continue
         discovered.append(candidate.name)
@@ -126,9 +163,28 @@ def latest_phase4_run(
     return runs[-1] if runs else None
 
 
+def latest_xgboost_run(
+    *,
+    repo_root: Path | None = None,
+    require_complete: bool = True,
+) -> str | None:
+    """Deterministically choose the latest XGBoost run by lexicographic run_version."""
+    runs = list_xgboost_runs(repo_root=repo_root, require_complete=require_complete)
+    return runs[-1] if runs else None
+
+
 def missing_phase4_files(run_dir: Path) -> list[str]:
     """Return missing required files for a run directory."""
-    return [name for name in PHASE4_REQUIRED_FILES if not (run_dir / name).exists()]
+    return _missing_files(run_dir, PHASE4_REQUIRED_FILES)
+
+
+def missing_xgboost_files(run_dir: Path) -> list[str]:
+    """Return missing required files for an XGBoost run directory."""
+    return _missing_files(run_dir, XGBOOST_REQUIRED_FILES)
+
+
+def _missing_files(run_dir: Path, required_files: tuple[str, ...]) -> list[str]:
+    return [name for name in required_files if not (run_dir / name).exists()]
 
 
 def load_features_dataframe(
@@ -314,16 +370,7 @@ def load_phase4_run_artifacts(
             f"Rebuild with: {remediation_commands()['phase4']}"
         )
 
-    predictions = pd.read_parquet(run_dir / "predictions.parquet")
-    expected_cols = {"run_version", "model_variant", "split", "date", "actual", "pred"}
-    missing_cols = expected_cols.difference(predictions.columns)
-    if missing_cols:
-        raise ValueError(f"predictions.parquet missing expected columns: {sorted(missing_cols)}")
-    predictions["date"] = pd.to_datetime(predictions["date"], errors="coerce").dt.normalize()
-    predictions = predictions.dropna(subset=["date"]).sort_values(
-        ["split", "model_variant", "date"],
-        kind="mergesort",
-    )
+    predictions = _load_predictions(run_dir / "predictions.parquet")
 
     results_payload = json.loads((run_dir / "results_table.json").read_text(encoding="utf-8"))
     paired_payload = json.loads((run_dir / "paired_comparison.json").read_text(encoding="utf-8"))
@@ -331,6 +378,8 @@ def load_phase4_run_artifacts(
     config_payload = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
 
     return {
+        "model_family": "SARIMAX",
+        "model_key": "sarimax",
         "run_version": run_version,
         "run_dir": run_dir,
         "predictions": predictions.reset_index(drop=True),
@@ -338,7 +387,74 @@ def load_phase4_run_artifacts(
         "paired_comparison": pd.DataFrame(paired_payload),
         "run_summary": summary_payload,
         "run_config": config_payload,
+        "feature_importance": pd.DataFrame(),
+        "feature_schema": {},
+        "model_path": None,
     }
+
+
+def load_xgboost_run_artifacts(
+    *,
+    run_version: str | None = None,
+    repo_root: Path | None = None,
+) -> dict[str, Any]:
+    """Load predictions, metrics, feature importance, and model metadata for an XGBoost run."""
+    paths = _paths(repo_root)
+    runs_root = paths["xgboost_runs_root"]
+    if run_version is None:
+        run_version = latest_xgboost_run(repo_root=repo_root, require_complete=True)
+    if run_version is None:
+        raise FileNotFoundError(
+            f"No complete XGBoost runs found under: {runs_root}. "
+            f"Run: {remediation_commands()['xgboost']}"
+        )
+
+    run_dir = runs_root / run_version
+    if not run_dir.exists():
+        raise FileNotFoundError(f"Requested XGBoost run does not exist: {run_dir}")
+
+    missing = missing_xgboost_files(run_dir)
+    if missing:
+        missing_str = ", ".join(missing)
+        raise FileNotFoundError(
+            f"XGBoost run {run_version!r} is incomplete. Missing: {missing_str}. "
+            f"Rebuild with: {remediation_commands()['xgboost']}"
+        )
+
+    predictions = _load_predictions(run_dir / "predictions.parquet")
+    results_payload = json.loads((run_dir / "results_table.json").read_text(encoding="utf-8"))
+    summary_payload = json.loads((run_dir / "run_summary.json").read_text(encoding="utf-8"))
+    config_payload = json.loads((run_dir / "run_config.json").read_text(encoding="utf-8"))
+    importance_payload = json.loads((run_dir / "feature_importance.json").read_text(encoding="utf-8"))
+    schema_payload = json.loads((run_dir / "feature_schema.json").read_text(encoding="utf-8"))
+
+    return {
+        "model_family": "XGBoost",
+        "model_key": "xgboost",
+        "run_version": run_version,
+        "run_dir": run_dir,
+        "predictions": predictions.reset_index(drop=True),
+        "results_table": pd.DataFrame(results_payload),
+        "paired_comparison": pd.DataFrame(),
+        "run_summary": summary_payload,
+        "run_config": config_payload,
+        "feature_importance": pd.DataFrame(importance_payload),
+        "feature_schema": schema_payload,
+        "model_path": run_dir / "model.json",
+    }
+
+
+def _load_predictions(predictions_path: Path) -> pd.DataFrame:
+    predictions = pd.read_parquet(predictions_path)
+    expected_cols = {"run_version", "model_variant", "split", "date", "actual", "pred"}
+    missing_cols = expected_cols.difference(predictions.columns)
+    if missing_cols:
+        raise ValueError(f"predictions.parquet missing expected columns: {sorted(missing_cols)}")
+    predictions["date"] = pd.to_datetime(predictions["date"], errors="coerce").dt.normalize()
+    return predictions.dropna(subset=["date"]).sort_values(
+        ["split", "model_variant", "date"],
+        kind="mergesort",
+    )
 
 
 def get_artifact_freshness(
@@ -360,6 +476,11 @@ def get_artifact_freshness(
         {"artifact": "model_dataset", "path": str(paths["model_dataset"]), "exists": paths["model_dataset"].exists()},
         {"artifact": "time_splits", "path": str(paths["splits"]), "exists": paths["splits"].exists()},
         {"artifact": "phase4_runs_root", "path": str(paths["phase4_runs_root"]), "exists": paths["phase4_runs_root"].exists()},
+        {
+            "artifact": "xgboost_runs_root",
+            "path": str(paths["xgboost_runs_root"]),
+            "exists": paths["xgboost_runs_root"].exists(),
+        },
     ]
     for row in rows:
         artifact_path = Path(row["path"])
@@ -394,10 +515,16 @@ def build_status_snapshot(
     complete_runs = list_phase4_runs(repo_root=repo_root, require_complete=True)
     latest_any = all_runs[-1] if all_runs else None
     latest_complete = complete_runs[-1] if complete_runs else None
+    xgboost_runs = list_xgboost_runs(repo_root=repo_root, require_complete=False)
+    complete_xgboost_runs = list_xgboost_runs(repo_root=repo_root, require_complete=True)
+    latest_xgboost = complete_xgboost_runs[-1] if complete_xgboost_runs else None
 
     latest_any_missing: list[str] = []
     if latest_any is not None and latest_complete != latest_any:
         latest_any_missing = missing_phase4_files(paths["phase4_runs_root"] / latest_any)
+    latest_xgboost_missing: list[str] = []
+    if xgboost_runs and latest_xgboost != xgboost_runs[-1]:
+        latest_xgboost_missing = missing_xgboost_files(paths["xgboost_runs_root"] / xgboost_runs[-1])
 
     feature_path_text = (
         str(selected_feature_path)
@@ -433,6 +560,13 @@ def build_status_snapshot(
             "ready": latest_complete is not None,
             "remediation_command": commands["phase4"],
         },
+        {
+            "key": "xgboost",
+            "label": "XGBoost Run Artifacts",
+            "path": str(paths["xgboost_runs_root"]),
+            "ready": latest_xgboost is not None,
+            "remediation_command": commands["xgboost"],
+        },
     ]
 
     ready_count = sum(1 for item in checks if item["ready"])
@@ -448,22 +582,31 @@ def build_status_snapshot(
             "latest_any": latest_any,
             "latest_complete": latest_complete,
             "latest_any_missing_files": latest_any_missing,
+            "xgboost_all": xgboost_runs,
+            "xgboost_complete": complete_xgboost_runs,
+            "xgboost_latest_complete": latest_xgboost,
+            "xgboost_latest_any_missing_files": latest_xgboost_missing,
         },
     }
 
 
 __all__ = [
     "PHASE4_REQUIRED_FILES",
+    "XGBOOST_REQUIRED_FILES",
     "remediation_commands",
     "resolve_features_path",
     "list_phase4_runs",
+    "list_xgboost_runs",
     "latest_phase4_run",
+    "latest_xgboost_run",
     "missing_phase4_files",
+    "missing_xgboost_files",
     "load_features_dataframe",
     "load_model_dataset_dataframe",
     "load_time_splits_payload",
     "load_optional_document_metadata",
     "load_phase4_run_artifacts",
+    "load_xgboost_run_artifacts",
     "get_artifact_freshness",
     "build_status_snapshot",
 ]

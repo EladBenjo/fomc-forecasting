@@ -6,31 +6,48 @@ import pandas as pd
 import streamlit as st
 
 from app.lib.artifacts import remediation_commands
-from app.lib.cached_data import get_phase4_payload, get_phase4_runs
+from app.lib.cached_data import (
+    get_phase4_payload,
+    get_phase4_runs,
+    get_xgboost_payload,
+    get_xgboost_runs,
+)
 from app.lib.dashboard_metrics import directional_accuracy
 
 st.title("Forecast & Model Results")
-st.caption("Model performance, Forecast Error diagnostics, and Baseline vs Text-Enhanced Model comparisons.")
+st.caption("Model performance, Forecast Error diagnostics, and model artifact inspection.")
 
 commands = remediation_commands()
-runs = get_phase4_runs(require_complete=True)
-if not runs:
-    st.warning("No complete model run artifacts found under `data/models/baselines/t5yie`.")
+model_runs = {
+    "SARIMAX": get_phase4_runs(require_complete=True),
+    "XGBoost": get_xgboost_runs(require_complete=True),
+}
+available_models = [model for model, runs in model_runs.items() if runs]
+if not available_models:
+    st.warning("No complete SARIMAX or XGBoost model run artifacts found.")
     st.code(commands["phase4"])
+    st.code(commands["xgboost"])
     st.stop()
 
+selected_model = st.selectbox("Model family", options=available_models, index=0)
+runs = model_runs[selected_model]
 selected_run = st.selectbox("Run version", options=runs, index=len(runs) - 1)
 try:
-    payload = get_phase4_payload(selected_run)
+    if selected_model == "XGBoost":
+        payload = get_xgboost_payload(selected_run)
+    else:
+        payload = get_phase4_payload(selected_run)
 except (FileNotFoundError, ValueError) as exc:
     st.error(str(exc))
-    st.code(commands["phase4"])
+    st.code(commands["xgboost"] if selected_model == "XGBoost" else commands["phase4"])
     st.stop()
 
 predictions = payload["predictions"]
 results = payload["results_table"].copy()
-paired = payload["paired_comparison"].copy()
+paired = payload.get("paired_comparison", pd.DataFrame()).copy()
 summary = payload["run_summary"]
+feature_importance = payload.get("feature_importance", pd.DataFrame()).copy()
+feature_schema = payload.get("feature_schema", {})
 
 st.subheader("Run Summary")
 st.json(summary)
@@ -58,6 +75,32 @@ else:
 if not paired.empty:
     st.subheader("Baseline vs Text-Enhanced Model")
     st.dataframe(paired, hide_index=True, use_container_width=True)
+
+if not feature_importance.empty and {"feature", "importance"}.issubset(feature_importance.columns):
+    st.subheader("XGBoost Feature Importance")
+    importance_df = (
+        feature_importance.copy()
+        .sort_values("importance", ascending=False, kind="mergesort")
+        .reset_index(drop=True)
+    )
+    top_importance = importance_df.head(20)
+    st.bar_chart(top_importance.set_index("feature")["importance"], use_container_width=True)
+    st.dataframe(top_importance, hide_index=True, use_container_width=True)
+
+if isinstance(feature_schema, dict) and feature_schema:
+    with st.expander("XGBoost Feature Schema"):
+        st.write(f"Target: `{feature_schema.get('target_column', 'unknown')}`")
+        st.write(f"Feature count: `{len(feature_schema.get('feature_columns', []))}`")
+        missing_rate = feature_schema.get("missing_rate", {})
+        if isinstance(missing_rate, dict) and missing_rate:
+            missing_df = (
+                pd.DataFrame(
+                    [{"feature": feature, "missing_rate": rate} for feature, rate in missing_rate.items()]
+                )
+                .sort_values("missing_rate", ascending=False, kind="mergesort")
+                .reset_index(drop=True)
+            )
+            st.dataframe(missing_df, hide_index=True, use_container_width=True)
 
 st.subheader("Actual vs Predicted")
 if predictions.empty:

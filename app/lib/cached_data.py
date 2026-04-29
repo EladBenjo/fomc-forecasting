@@ -68,6 +68,30 @@ def get_latest_phase4_payload(repo_root: str | None = None) -> dict[str, Any] | 
 
 
 @st.cache_data(show_spinner=False)
+def get_xgboost_runs(repo_root: str | None = None, require_complete: bool = True) -> list[str]:
+    return artifacts.list_xgboost_runs(
+        repo_root=_as_path(repo_root),
+        require_complete=require_complete,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def get_xgboost_payload(run_version: str, repo_root: str | None = None) -> dict[str, Any]:
+    return artifacts.load_xgboost_run_artifacts(
+        run_version=run_version,
+        repo_root=_as_path(repo_root),
+    )
+
+
+@st.cache_data(show_spinner=False)
+def get_latest_xgboost_payload(repo_root: str | None = None) -> dict[str, Any] | None:
+    latest = artifacts.latest_xgboost_run(repo_root=_as_path(repo_root), require_complete=True)
+    if latest is None:
+        return None
+    return artifacts.load_xgboost_run_artifacts(run_version=latest, repo_root=_as_path(repo_root))
+
+
+@st.cache_data(show_spinner=False)
 def get_optional_metadata_frame(repo_root: str | None = None) -> pd.DataFrame:
     return artifacts.load_optional_document_metadata(repo_root=_as_path(repo_root))
 

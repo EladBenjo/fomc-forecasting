@@ -36,7 +36,7 @@ flowchart LR
     F --> H[Dataset Builder<br/>Join Features + Target<br/>Train / Validation / Test Splits]
     G --> H
 
-    H --> I[Modeling Layer<br/>SARIMAX Baselines / XGBoost Next]
+    H --> I[Modeling Layer<br/>SARIMAX Baselines / XGBoost]
     H --> K[Streamlit App MVP<br/>Status / Features / Models]
     I --> K
     E --> J[RAG Retrieval Layer<br/>Planned]
@@ -47,7 +47,7 @@ flowchart LR
 
 - Relevant Fed speeches and FOMC documents are discovered, fetched, and stored through a unified pipeline
 - Text is processed into sentence-level inputs and converted into document-level feature artifacts in `features.parquet`
-- `T5YIE` target building, transformation, dataset construction, and SARIMAX benchmarking are operational
+- `T5YIE` target building, transformation, dataset construction, SARIMAX benchmarking, and XGBoost training are operational
 - The Streamlit MVP reads existing artifacts and surfaces status, feature views, and model outputs
 
 ---
@@ -73,6 +73,7 @@ flowchart LR
 | Target pipeline | done for `T5YIE` | Versioned FRED fetch + transform pipeline |
 | Dataset builder | done for `T5YIE` | Joined feature/target dataset with fixed time splits |
 | Baseline models | done | Walk-forward SARIMAX benchmark pipeline |
+| ML models | done | Daily XGBoost training/evaluation runner |
 | Streamlit app | MVP in progress | Read-only artifact explorer wired to current outputs |
 | RAG layer | planned | Retrieval layer not implemented yet |
 
@@ -293,6 +294,36 @@ CLI options:
 - `--meaningful-threshold-pct <float>`
 - `--manifest` / `--no-manifest`
 
+### Phase 5 XGBoost daily model runner
+
+The XGBoost runner trains on the same daily aligned dataset used by the SARIMAX default path. It uses the fixed daily train/validation/test split, keeps XGBoost's native missing-value handling, and writes a deployed model artifact trained on all available daily rows after validation/test evaluation.
+
+Inputs:
+- `data/targets/model_dataset_t5yie_daily.parquet`
+- `data/splits/time_splits_daily.json`
+
+Command:
+- `python -m models.ml.xgboost`
+
+Default model setup:
+- target: `t5yie_diff1`
+- features: shifted target lag/rolling columns plus all 7/14/30-day communication-window features
+- validation model: train split only, predict validation split
+- test model: train + validation splits, predict test split
+- deployed artifact: all non-missing target rows
+
+Versioned run artifacts:
+- `data/models/xgboost/t5yie/<run_version>/predictions.parquet`
+- `data/models/xgboost/t5yie/<run_version>/results_table.json`
+- `data/models/xgboost/t5yie/<run_version>/run_summary.json`
+- `data/models/xgboost/t5yie/<run_version>/run_config.json`
+- `data/models/xgboost/t5yie/<run_version>/feature_importance.json`
+- `data/models/xgboost/t5yie/<run_version>/feature_schema.json`
+- `data/models/xgboost/t5yie/<run_version>/model.json`
+
+Run metadata:
+- `data/models/xgboost/manifests/<run_version>.json`
+
 ### Phase 7 Streamlit app MVP (in progress)
 
 The app MVP is now wired to existing artifacts and remains strictly read-only.
@@ -322,7 +353,7 @@ Read-only contract:
 | 2 | Feature engineering (ZettaQuant sentiment, novelty, topics) | done |
 | 3 | Target variable + dataset builder (FRED) | in progress (T5YIE done; additional target stream pending) |
 | 4 | Baseline models (SARIMAX benchmark pipeline) | done (production runner + tracking + tests) |
-| 5 | ML models (XGBoost) | - |
+| 5 | ML models (XGBoost) | done (daily runner + artifacts) |
 | 6 | RAG layer (sentence-transformers + sqlite-vec) | - |
 | 7 | Streamlit demo app | in progress (MVP wired to artifact views) |
 
@@ -372,7 +403,10 @@ python -m datasets.build_dataset.daily_builder
 # 10. Run Phase 4 SARIMAX baseline vs exogenous benchmark (versioned run artifacts)
 python -m models.baselines.sarimax
 
-# 11. Launch Streamlit app MVP (read-only artifact explorer)
+# 11. Run Phase 5 XGBoost daily model runner (versioned run artifacts)
+python -m models.ml.xgboost
+
+# 12. Launch Streamlit app MVP (read-only artifact explorer)
 streamlit run app/main.py
 ```
 

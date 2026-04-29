@@ -4,31 +4,70 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 import models.baselines.sarimax as sarimax_module
 from models.baselines.sarimax import SarimaxBenchmarkConfig, run_phase4_benchmark
 
 
 def _write_dataset(path: Path) -> None:
+    base = {
+        "date": pd.to_datetime(
+            [
+                "2016-12-01",
+                "2017-01-01",
+                "2017-02-01",
+                "2020-12-01",
+                "2021-01-01",
+                "2021-02-01",
+            ]
+        ),
+        "t5yie_diff1": [0.1, 0.2, 0.3, 0.4, -0.1, 0.05],
+    }
+    daily_features: dict[str, list[float | int]] = {}
+    for days, offset in [(7, 0.0), (14, 0.1), (30, 0.2)]:
+        daily_features.update(
+            {
+                f"hawkish_score_mean_{days}d": [
+                    0.1 + offset,
+                    0.2 + offset,
+                    0.2 + offset,
+                    0.1 + offset,
+                    -0.1 + offset,
+                    0.0 + offset,
+                ],
+                f"hawkish_score_sum_{days}d": [
+                    0.1 + offset,
+                    0.4 + offset,
+                    0.4 + offset,
+                    0.2 + offset,
+                    -0.1 + offset,
+                    0.0 + offset,
+                ],
+                f"hawkish_score_max_abs_signed_{days}d": [
+                    0.2 + offset,
+                    0.3 + offset,
+                    0.2 + offset,
+                    0.1 + offset,
+                    -0.1 + offset,
+                    0.0 + offset,
+                ],
+                f"novelty_mean_{days}d": [
+                    0.2 + offset,
+                    0.3 + offset,
+                    0.3 + offset,
+                    0.4 + offset,
+                    0.5 + offset,
+                    0.6 + offset,
+                ],
+                f"n_target_sentences_sum_{days}d": [1.0, 3.0, 3.0, 3.0, 2.0, 2.0],
+                f"doc_count_{days}d": [1, 2, 2, 2, 1, 1],
+            }
+        )
     df = pd.DataFrame(
         {
-            "date": pd.to_datetime(
-                [
-                    "2016-12-01",
-                    "2017-01-01",
-                    "2017-02-01",
-                    "2020-12-01",
-                    "2021-01-01",
-                    "2021-02-01",
-                ]
-            ),
-            "t5yie_diff1": [0.1, 0.2, 0.3, 0.4, -0.1, 0.05],
-            "hawkish_score": [0.1, 0.2, 0.2, 0.1, -0.1, 0.0],
-            "novelty": [0.2, 0.3, 0.3, 0.4, 0.5, 0.6],
-            "n_hawkish": [1, 2, 2, 1, 0, 1],
-            "n_dovish": [0, 1, 1, 2, 2, 1],
-            "n_target_sentences": [1, 3, 3, 3, 2, 2],
-            "doc_count": [1, 2, 2, 2, 1, 1],
+            **base,
+            **daily_features,
         }
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,18 +100,21 @@ def _fake_runner(
     min_train_obs: int,
 ) -> tuple[pd.DataFrame, int]:
     actual_map = dict(zip(df[date_col], df[target_col]))
-    variant = (
-        "baseline_univariate"
-        if not exog_cols
-        else "exog_minimal_counts"
-        if exog_cols == ["hawkish_score", "novelty", "doc_count"]
-        else "exog_share_variant"
-    )
+    if not exog_cols:
+        variant = "baseline_univariate"
+    else:
+        variant_by_cols = {
+            tuple(cols): name for name, cols in sarimax_module.MODEL_VARIANTS.items() if cols
+        }
+        variant = variant_by_cols.get(tuple(exog_cols), "unknown")
+    if variant == "unknown":
+        raise AssertionError(f"Unexpected exogenous column bundle: {exog_cols}")
+
     if eval_start is not None and eval_start >= pd.Timestamp("2021-01-01"):
         dates = [pd.Timestamp("2021-01-01"), pd.Timestamp("2021-02-01")]
     else:
         dates = [pd.Timestamp("2017-01-01"), pd.Timestamp("2020-12-01")]
-        if variant == "exog_share_variant":
+        if variant == "exog_daily_30d_event":
             dates = [pd.Timestamp("2020-12-01")]
 
     rows = []
@@ -80,7 +122,7 @@ def _fake_runner(
         actual = float(actual_map[dt])
         if variant == "baseline_univariate":
             pred = actual + 0.05
-        elif variant == "exog_minimal_counts":
+        elif variant == "exog_daily_7d":
             pred = actual + 0.02
         else:
             pred = actual + 0.01
@@ -90,8 +132,8 @@ def _fake_runner(
 
 
 def test_run_phase4_benchmark_writes_expected_outputs(monkeypatch, tmp_path: Path):
-    dataset_path = tmp_path / "data" / "targets" / "model_dataset_t5yie.parquet"
-    split_path = tmp_path / "data" / "splits" / "time_splits.json"
+    dataset_path = tmp_path / "data" / "targets" / "model_dataset_t5yie_daily.parquet"
+    split_path = tmp_path / "data" / "splits" / "time_splits_daily.json"
     output_root = tmp_path / "data" / "models" / "baselines" / "t5yie"
     _write_dataset(dataset_path)
     _write_splits(split_path)
@@ -121,19 +163,24 @@ def test_run_phase4_benchmark_writes_expected_outputs(monkeypatch, tmp_path: Pat
     assert config_path.exists()
 
     results_rows = json.loads(results_path.read_text(encoding="utf-8"))
-    assert len(results_rows) == 6
-    assert {row["model_variant"] for row in results_rows} == {
-        "baseline_univariate",
-        "exog_minimal_counts",
-        "exog_share_variant",
-    }
+    assert len(results_rows) == 12
+    expected_variants = set(sarimax_module.MODEL_VARIANTS)
+    assert {row["model_variant"] for row in results_rows} == expected_variants
+
     paired_rows = json.loads(paired_path.read_text(encoding="utf-8"))
-    val_share = next(
+    assert len(paired_rows) == 10
+    assert {row["exog_variant"] for row in paired_rows} == expected_variants - {"baseline_univariate"}
+    val_event = next(
         row
         for row in paired_rows
-        if row["split"] == "val" and row["exog_variant"] == "exog_share_variant"
+        if row["split"] == "val" and row["exog_variant"] == "exog_daily_30d_event"
     )
-    assert val_share["n_common_dates"] == 1
+    assert val_event["n_common_dates"] == 1
+
+    config_payload = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config_payload["dataset_path"] == str(dataset_path)
+    assert config_payload["split_path"] == str(split_path)
+    assert set(config_payload["model_variants"]) == expected_variants
 
     pred_df = pd.read_parquet(predictions_path)
     assert set(pred_df.columns) == {"run_version", "model_variant", "split", "date", "actual", "pred"}
@@ -141,8 +188,8 @@ def test_run_phase4_benchmark_writes_expected_outputs(monkeypatch, tmp_path: Pat
 
 
 def test_run_phase4_benchmark_is_deterministic_across_versions(monkeypatch, tmp_path: Path):
-    dataset_path = tmp_path / "data" / "targets" / "model_dataset_t5yie.parquet"
-    split_path = tmp_path / "data" / "splits" / "time_splits.json"
+    dataset_path = tmp_path / "data" / "targets" / "model_dataset_t5yie_daily.parquet"
+    split_path = tmp_path / "data" / "splits" / "time_splits_daily.json"
     output_root = tmp_path / "data" / "models" / "baselines" / "t5yie"
     _write_dataset(dataset_path)
     _write_splits(split_path)
@@ -179,3 +226,45 @@ def test_run_phase4_benchmark_is_deterministic_across_versions(monkeypatch, tmp_
     pred_b = pd.read_parquet(out_b / "predictions.parquet").drop(columns=["run_version"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(pred_a, pred_b)
 
+
+def test_default_config_uses_daily_artifacts():
+    config = SarimaxBenchmarkConfig()
+
+    assert config.dataset_path == sarimax_module.DEFAULT_DATASET_PATH
+    assert config.split_path == sarimax_module.DEFAULT_SPLITS_PATH
+    assert config.dataset_path.name == "model_dataset_t5yie_daily.parquet"
+    assert config.split_path.name == "time_splits_daily.json"
+
+
+def test_run_phase4_benchmark_fails_on_missing_daily_feature_columns(tmp_path: Path):
+    dataset_path = tmp_path / "data" / "targets" / "model_dataset_t5yie_daily.parquet"
+    split_path = tmp_path / "data" / "splits" / "time_splits_daily.json"
+    output_root = tmp_path / "data" / "models" / "baselines" / "t5yie"
+    _write_dataset(dataset_path)
+    _write_splits(split_path)
+
+    df = pd.read_parquet(dataset_path).drop(
+        columns=[
+            "hawkish_score_sum_30d",
+            "hawkish_score_max_abs_signed_30d",
+            "n_target_sentences_sum_30d",
+        ]
+    )
+    df.to_parquet(dataset_path, index=False)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Model dataset missing required columns for configured variants.*"
+            "python -m datasets.build_dataset.daily_builder"
+        ),
+    ):
+        run_phase4_benchmark(
+            SarimaxBenchmarkConfig(
+                dataset_path=dataset_path,
+                split_path=split_path,
+                output_root=output_root,
+                run_version="phase4-test-missing-cols",
+                write_manifest_files=False,
+            )
+        )

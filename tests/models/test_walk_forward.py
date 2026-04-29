@@ -31,6 +31,46 @@ class _FakeSARIMAX:
         return _FitResult(self._endog)
 
 
+class _AppendFitResult:
+    def __init__(self, train_y: pd.Series):
+        self._train_y = train_y.copy()
+
+    def forecast(self, steps: int = 1, exog: pd.DataFrame | None = None) -> pd.Series:
+        return pd.Series([float(self._train_y.iloc[-1])])
+
+    def append(
+        self,
+        endog: pd.Series,
+        exog: pd.DataFrame | None = None,
+        refit: bool = False,
+    ) -> "_AppendFitResult":
+        if refit:
+            raise AssertionError("append path should not refit")
+        self._train_y = pd.concat([self._train_y, endog])
+        return self
+
+
+class _AppendSARIMAX(_FakeSARIMAX):
+    __module__ = "statsmodels.fake"
+    init_calls = 0
+
+    def __init__(
+        self,
+        *,
+        endog: pd.Series,
+        exog: pd.DataFrame | None,
+        order: tuple[int, int, int],
+        trend: str,
+        enforce_stationarity: bool,
+        enforce_invertibility: bool,
+    ):
+        type(self).init_calls += 1
+        self._endog = endog
+
+    def fit(self, disp: bool = False) -> _AppendFitResult:
+        return _AppendFitResult(self._endog)
+
+
 def test_run_expanding_one_step_sarimax_enforces_no_leakage(monkeypatch):
     monkeypatch.setattr(walk_forward, "_SARIMAX", _FakeSARIMAX)
     df = pd.DataFrame(
@@ -151,3 +191,34 @@ def test_run_expanding_one_step_sarimax_outputs_monotonic_dates(monkeypatch):
 
     assert pred_df["date"].is_monotonic_increasing
 
+
+def test_run_expanding_one_step_sarimax_uses_append_for_statsmodels(monkeypatch):
+    _AppendSARIMAX.init_calls = 0
+    monkeypatch.setattr(walk_forward, "_SARIMAX", _AppendSARIMAX)
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                ["2020-01-01", "2020-02-01", "2020-03-01", "2020-04-01", "2020-05-01"]
+            ),
+            "y": [1.0, 2.0, 3.0, 4.0, 5.0],
+        }
+    )
+
+    pred_df, n_fail = walk_forward.run_expanding_one_step_sarimax(
+        df=df,
+        target_col="y",
+        date_col="date",
+        eval_start=pd.Timestamp("2020-03-01"),
+        eval_end=pd.Timestamp("2020-05-01"),
+        exog_cols=[],
+        min_train_obs=2,
+    )
+
+    assert n_fail == 0
+    assert _AppendSARIMAX.init_calls == 1
+    assert pred_df["date"].tolist() == [
+        pd.Timestamp("2020-03-01"),
+        pd.Timestamp("2020-04-01"),
+        pd.Timestamp("2020-05-01"),
+    ]
+    assert pred_df["pred"].tolist() == [2.0, 3.0, 4.0]

@@ -1,0 +1,470 @@
+"""Production builder for the daily leak-free t5yie_diff1 modeling dataset."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from datasets.build_dataset.alignment import normalize_dates, validate_expected_rows
+from datasets.build_dataset.daily_alignment import (
+    DEFAULT_DAILY_COMM_WINDOWS,
+    build_daily_model_dataset_frame,
+)
+from datasets.build_dataset.versioning import (
+    ModelDatasetManifest,
+    default_dataset_version,
+    get_git_sha,
+    hash_file,
+    utc_now_iso,
+    write_manifest,
+)
+from datasets.schema.fields import DATE_COLUMN, TARGET_COLUMN
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+@dataclass
+class BuildDailyDatasetConfig:
+    """Config for deterministic daily model dataset + split artifact generation."""
+
+    features_path: Path = field(
+        default_factory=lambda: _repo_root() / "data" / "features" / "doc_level" / "features.parquet"
+    )
+    target_path: Path = field(
+        default_factory=lambda: _repo_root() / "data" / "targets" / "t5yie_diff1.parquet"
+    )
+    output_dataset_path: Path = field(
+        default_factory=lambda: _repo_root() / "data" / "targets" / "model_dataset_t5yie_daily.parquet"
+    )
+    split_output_path: Path = field(
+        default_factory=lambda: _repo_root() / "data" / "splits" / "time_splits_daily.json"
+    )
+    summary_output_path: Path | None = None
+
+    target_column: str = TARGET_COLUMN
+    communication_windows: tuple[int, ...] = DEFAULT_DAILY_COMM_WINDOWS
+    communication_lag_days: int = 0
+    expected_rows: dict[str, int] | None = None
+
+    train_end: str = "2016-12-31"
+    val_start: str = "2017-01-01"
+    val_end: str = "2020-12-31"
+    test_start: str = "2021-01-01"
+
+    dataset_version: str | None = None
+    write_manifest_files: bool = True
+    manifest_out_dir: Path | None = None
+    manifest_registry_path: Path | None = None
+
+
+def _as_path(value: str | Path) -> Path:
+    return value if isinstance(value, Path) else Path(value)
+
+
+def _atomic_write_parquet(df: pd.DataFrame, out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(".parquet.tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    df.to_parquet(tmp_path, index=False)
+    os.replace(tmp_path, out_path)
+
+
+def _atomic_write_json(payload: dict[str, Any], out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = out_path.with_suffix(out_path.suffix + ".tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    with tmp_path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    os.replace(tmp_path, out_path)
+
+
+def _parse_split_boundaries(config: BuildDailyDatasetConfig) -> dict[str, pd.Timestamp]:
+    boundaries = {
+        "train_end": pd.Timestamp(config.train_end).normalize(),
+        "val_start": pd.Timestamp(config.val_start).normalize(),
+        "val_end": pd.Timestamp(config.val_end).normalize(),
+        "test_start": pd.Timestamp(config.test_start).normalize(),
+    }
+    if not (boundaries["train_end"] < boundaries["val_start"]):
+        raise ValueError("Invalid split config: train_end must be before val_start.")
+    if not (boundaries["val_start"] <= boundaries["val_end"]):
+        raise ValueError("Invalid split config: val_start must be <= val_end.")
+    if not (boundaries["val_end"] < boundaries["test_start"]):
+        raise ValueError("Invalid split config: val_end must be before test_start.")
+    return boundaries
+
+
+def _build_split_masks(
+    dataset_df: pd.DataFrame,
+    boundaries: dict[str, pd.Timestamp],
+) -> dict[str, pd.Series]:
+    if DATE_COLUMN not in dataset_df.columns:
+        raise ValueError(f"Model dataset is missing required column: {DATE_COLUMN!r}")
+
+    date_series = pd.to_datetime(dataset_df[DATE_COLUMN], errors="coerce").dt.normalize()
+    if date_series.isna().any():
+        raise ValueError("Model dataset contains invalid split dates.")
+
+    masks = {
+        "train": date_series <= boundaries["train_end"],
+        "val": (date_series >= boundaries["val_start"]) & (date_series <= boundaries["val_end"]),
+        "test": date_series >= boundaries["test_start"],
+    }
+
+    overlap = (masks["train"] & masks["val"]) | (masks["train"] & masks["test"]) | (masks["val"] & masks["test"])
+    if bool(overlap.any()):
+        raise ValueError("Split masks overlap; split boundaries are not mutually exclusive.")
+
+    covered = masks["train"] | masks["val"] | masks["test"]
+    if not bool(covered.all()):
+        uncovered = int((~covered).sum())
+        raise ValueError(f"Split masks do not cover all rows. Uncovered rows: {uncovered}")
+
+    return masks
+
+
+def _build_split_payload(
+    dataset_df: pd.DataFrame,
+    *,
+    boundaries: dict[str, pd.Timestamp],
+    masks: dict[str, pd.Series],
+    target_column: str,
+) -> tuple[dict[str, Any], dict[str, int]]:
+    date_as_str = pd.to_datetime(dataset_df[DATE_COLUMN]).dt.strftime("%Y-%m-%d")
+
+    split_counts = {name: int(mask.sum()) for name, mask in masks.items()}
+    split_dates = {name: date_as_str.loc[mask].tolist() for name, mask in masks.items()}
+
+    payload: dict[str, Any] = {
+        "generated_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "date_column": DATE_COLUMN,
+        "target_column": target_column,
+        "boundaries": {
+            "train_end": boundaries["train_end"].strftime("%Y-%m-%d"),
+            "val_start": boundaries["val_start"].strftime("%Y-%m-%d"),
+            "val_end": boundaries["val_end"].strftime("%Y-%m-%d"),
+            "test_start": boundaries["test_start"].strftime("%Y-%m-%d"),
+        },
+        "counts": split_counts,
+        "dates": split_dates,
+    }
+    return payload, split_counts
+
+
+def _build_summary(
+    dataset_df: pd.DataFrame,
+    *,
+    split_counts: dict[str, int],
+    feature_columns: tuple[str, ...],
+) -> dict[str, Any]:
+    missingness = {col: float(dataset_df[col].isna().mean()) for col in feature_columns}
+    return {
+        "rows": int(len(dataset_df)),
+        "date_min": pd.to_datetime(dataset_df[DATE_COLUMN]).min().strftime("%Y-%m-%d"),
+        "date_max": pd.to_datetime(dataset_df[DATE_COLUMN]).max().strftime("%Y-%m-%d"),
+        "split_counts": split_counts,
+        "missingness_rate": missingness,
+    }
+
+
+def _print_summary(summary: dict[str, Any]) -> None:
+    print(f"model_dataset rows: {summary['rows']}")
+    print(f"model_dataset date range: {summary['date_min']} -> {summary['date_max']}")
+    print(f"split counts: {summary['split_counts']}")
+    print(f"missingness_rate: {summary['missingness_rate']}")
+
+
+def build_daily_model_dataset(config: BuildDailyDatasetConfig) -> Path:
+    """Build daily t5yie_diff1 modeling dataset and split artifact."""
+    features_path = _as_path(config.features_path)
+    target_path = _as_path(config.target_path)
+    output_dataset_path = _as_path(config.output_dataset_path)
+    split_output_path = _as_path(config.split_output_path)
+    summary_output_path = _as_path(config.summary_output_path) if config.summary_output_path else None
+
+    if not features_path.exists():
+        raise FileNotFoundError(f"Missing features parquet: {features_path}")
+    if not target_path.exists():
+        raise FileNotFoundError(f"Missing target parquet: {target_path}")
+
+    raw_target_df = pd.read_parquet(target_path)
+    raw_features_df = pd.read_parquet(features_path)
+
+    target_df = normalize_dates(raw_target_df, frame_name="target_df", require_unique=True)
+    features_df = normalize_dates(raw_features_df, frame_name="features_df", require_unique=False)
+
+    model_dataset_df, feature_columns = build_daily_model_dataset_frame(
+        target_df=target_df,
+        features_df=features_df,
+        target_column=config.target_column,
+        communication_windows=config.communication_windows,
+        communication_lag_days=config.communication_lag_days,
+    )
+
+    actual_rows = {
+        "target_rows": len(target_df),
+        "features_rows": len(features_df),
+        "dataset_rows": len(model_dataset_df),
+    }
+    validate_expected_rows(actual_rows, config.expected_rows)
+
+    boundaries = _parse_split_boundaries(config)
+    masks = _build_split_masks(model_dataset_df, boundaries)
+    split_payload, split_counts = _build_split_payload(
+        model_dataset_df,
+        boundaries=boundaries,
+        masks=masks,
+        target_column=config.target_column,
+    )
+    summary = _build_summary(
+        model_dataset_df,
+        split_counts=split_counts,
+        feature_columns=feature_columns,
+    )
+
+    _atomic_write_parquet(model_dataset_df, output_dataset_path)
+    _atomic_write_json(split_payload, split_output_path)
+    if summary_output_path:
+        _atomic_write_json(summary, summary_output_path)
+
+    if config.write_manifest_files:
+        manifest_out_dir = _as_path(config.manifest_out_dir) if config.manifest_out_dir else output_dataset_path.parent
+        manifest_registry_path = (
+            _as_path(config.manifest_registry_path)
+            if config.manifest_registry_path
+            else manifest_out_dir / "model_dataset_registry.sqlite3"
+        )
+        manifest = ModelDatasetManifest(
+            dataset_version=config.dataset_version
+            or default_dataset_version(prefix="model-dataset-t5yie-daily"),
+            created_at_utc=utc_now_iso(),
+            git_sha=get_git_sha(_repo_root()),
+            target_column=config.target_column,
+            monthly_feature_columns=list(feature_columns),
+            features_input_path=str(features_path),
+            features_input_sha256=hash_file(features_path),
+            features_input_rows=len(features_df),
+            target_input_path=str(target_path),
+            target_input_sha256=hash_file(target_path),
+            target_input_rows=len(target_df),
+            output_dataset_path=str(output_dataset_path),
+            output_dataset_sha256=hash_file(output_dataset_path),
+            output_dataset_rows=len(model_dataset_df),
+            split_output_path=str(split_output_path),
+            split_output_sha256=hash_file(split_output_path),
+            summary_output_path=str(summary_output_path) if summary_output_path else None,
+            summary_output_sha256=hash_file(summary_output_path) if summary_output_path else None,
+            train_end=boundaries["train_end"].strftime("%Y-%m-%d"),
+            val_start=boundaries["val_start"].strftime("%Y-%m-%d"),
+            val_end=boundaries["val_end"].strftime("%Y-%m-%d"),
+            test_start=boundaries["test_start"].strftime("%Y-%m-%d"),
+        )
+        manifest_path = write_manifest(
+            out_dir=manifest_out_dir,
+            registry_path=manifest_registry_path,
+            manifest=manifest,
+            extra={
+                "split_counts": split_counts,
+                "frequency": "daily",
+                "communication_windows": list(config.communication_windows),
+                "communication_lag_days": int(config.communication_lag_days),
+            },
+        )
+        print(f"wrote manifest: {manifest_path}")
+
+    _print_summary(summary)
+    return output_dataset_path
+
+
+def _parse_expected_rows_json(raw_json: str | None) -> dict[str, int] | None:
+    if raw_json is None:
+        return None
+    try:
+        parsed = json.loads(raw_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid --expected-rows-json payload: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("--expected-rows-json must decode to a JSON object.")
+
+    out: dict[str, int] = {}
+    for key, value in parsed.items():
+        if not isinstance(key, str):
+            raise ValueError("--expected-rows-json keys must be strings.")
+        try:
+            out[key] = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"--expected-rows-json value for key {key!r} must be int-like.") from exc
+    return out
+
+
+def _parse_communication_windows(raw: str) -> tuple[int, ...]:
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    if not parts:
+        raise ValueError("At least one --communication-windows value is required.")
+    windows = tuple(int(part) for part in parts)
+    if len(set(windows)) != len(windows):
+        raise ValueError("--communication-windows contains duplicates.")
+    if any(days <= 0 for days in windows):
+        raise ValueError("--communication-windows must contain positive integers.")
+    return windows
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Build the Phase 3 daily leak-free modeling dataset for t5yie_diff1."
+    )
+    parser.add_argument(
+        "--features-path",
+        type=str,
+        default=None,
+        help="Path to doc-level feature parquet (default: data/features/doc_level/features.parquet).",
+    )
+    parser.add_argument(
+        "--target-path",
+        type=str,
+        default=None,
+        help="Path to target parquet (default: data/targets/t5yie_diff1.parquet).",
+    )
+    parser.add_argument(
+        "--output-dataset-path",
+        type=str,
+        default=None,
+        help="Path to output model dataset parquet (default: data/targets/model_dataset_t5yie_daily.parquet).",
+    )
+    parser.add_argument(
+        "--split-output-path",
+        type=str,
+        default=None,
+        help="Path to output time-split json (default: data/splits/time_splits_daily.json).",
+    )
+    parser.add_argument(
+        "--summary-output-path",
+        type=str,
+        default=None,
+        help="Optional path to write summary JSON.",
+    )
+    parser.add_argument(
+        "--target-column",
+        type=str,
+        default=TARGET_COLUMN,
+        help=f"Target column name (default: {TARGET_COLUMN}).",
+    )
+    parser.add_argument(
+        "--communication-windows",
+        type=str,
+        default="7,14,30",
+        help="Comma-separated trailing communication windows in days (default: 7,14,30).",
+    )
+    parser.add_argument(
+        "--communication-lag-days",
+        type=int,
+        default=0,
+        help="Optional lag in days before each target date for communication windows (default: 0).",
+    )
+    parser.add_argument(
+        "--expected-rows-json",
+        type=str,
+        default=None,
+        help='Optional JSON object for strict row checks (e.g. \'{"dataset_rows": 279}\').',
+    )
+    parser.add_argument(
+        "--dataset-version",
+        type=str,
+        default=None,
+        help="Optional explicit dataset version for manifest/registry writes.",
+    )
+    parser.add_argument(
+        "--manifest-out-dir",
+        type=str,
+        default=None,
+        help="Optional directory for manifest json output (default: output dataset directory).",
+    )
+    parser.add_argument(
+        "--manifest-registry-path",
+        type=str,
+        default=None,
+        help="Optional path for model dataset registry sqlite.",
+    )
+    parser.add_argument(
+        "--manifest",
+        dest="write_manifest_files",
+        action="store_true",
+        default=True,
+        help="Write model-dataset manifest + registry row (default: enabled).",
+    )
+    parser.add_argument(
+        "--no-manifest",
+        dest="write_manifest_files",
+        action="store_false",
+        help="Disable manifest/registry writes.",
+    )
+    parser.add_argument("--train-end", type=str, default="2016-12-31", help="Train split end date (inclusive).")
+    parser.add_argument("--val-start", type=str, default="2017-01-01", help="Validation split start date (inclusive).")
+    parser.add_argument("--val-end", type=str, default="2020-12-31", help="Validation split end date (inclusive).")
+    parser.add_argument("--test-start", type=str, default="2021-01-01", help="Test split start date (inclusive).")
+    return parser
+
+
+def _config_from_args(args: argparse.Namespace) -> BuildDailyDatasetConfig:
+    config = BuildDailyDatasetConfig(
+        target_column=args.target_column,
+        communication_windows=_parse_communication_windows(args.communication_windows),
+        communication_lag_days=int(args.communication_lag_days),
+        expected_rows=_parse_expected_rows_json(args.expected_rows_json),
+        train_end=args.train_end,
+        val_start=args.val_start,
+        val_end=args.val_end,
+        test_start=args.test_start,
+        dataset_version=args.dataset_version,
+        write_manifest_files=args.write_manifest_files,
+    )
+    if args.features_path:
+        config.features_path = Path(args.features_path)
+    if args.target_path:
+        config.target_path = Path(args.target_path)
+    if args.output_dataset_path:
+        config.output_dataset_path = Path(args.output_dataset_path)
+    if args.split_output_path:
+        config.split_output_path = Path(args.split_output_path)
+    if args.summary_output_path:
+        config.summary_output_path = Path(args.summary_output_path)
+    if args.manifest_out_dir:
+        config.manifest_out_dir = Path(args.manifest_out_dir)
+    if args.manifest_registry_path:
+        config.manifest_registry_path = Path(args.manifest_registry_path)
+    return config
+
+
+def main(argv: list[str] | None = None) -> Path:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    config = _config_from_args(args)
+    output_path = build_daily_model_dataset(config)
+    print(f"wrote model dataset: {output_path}")
+    print(f"wrote split artifact: {config.split_output_path}")
+    if config.summary_output_path:
+        print(f"wrote summary artifact: {config.summary_output_path}")
+    if config.write_manifest_files:
+        manifest_out_dir = config.manifest_out_dir or config.output_dataset_path.parent
+        manifest_registry = config.manifest_registry_path or (manifest_out_dir / "model_dataset_registry.sqlite3")
+        print(f"wrote model-dataset registry: {manifest_registry}")
+    return output_path
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
+
+
+__all__ = ["BuildDailyDatasetConfig", "build_daily_model_dataset", "main"]

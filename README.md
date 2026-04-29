@@ -215,6 +215,35 @@ CLI:
   - `--manifest-out-dir <dir>`
   - `--manifest-registry-path <path>`
 
+### Daily model dataset builder pipeline (SARIMAX default)
+
+The daily model dataset builder aligns each target observation to leak-free daily features:
+- shifted target lag and rolling features
+- trailing communication windows for 7, 14, and 30 days
+- fixed time splits:
+  - train: `date <= 2016-12-31`
+  - val: `2017-01-01 <= date <= 2020-12-31`
+  - test: `date >= 2021-01-01`
+
+Artifacts:
+- `data/targets/model_dataset_t5yie_daily.parquet`
+- `data/splits/time_splits_daily.json`
+- `data/targets/manifests/model-dataset-t5yie-daily-<dataset_version>.json`
+- `data/targets/model_dataset_registry.sqlite3`
+
+CLI:
+- `python -m datasets.build_dataset.daily_builder`
+- Optional outputs:
+  - `--output-dataset-path <path>`
+  - `--split-output-path <path>`
+  - `--summary-output-path <path>`
+- Optional feature-window controls:
+  - `--communication-windows 7,14,30`
+  - `--communication-lag-days <int>`
+- Optional versioning:
+  - `--dataset-version <tag>`
+  - `--manifest` / `--no-manifest` (default enabled)
+
 Notebook EDA DB helper:
 - `python scripts/build_targets_eda_db.py`
 - Builds one SQLite DB combining:
@@ -225,11 +254,11 @@ Notebook EDA DB helper:
 
 ### Phase 4 SARIMAX benchmark pipeline (baseline vs exogenous)
 
-The Phase 4 benchmark productionizes `notebooks/t5yie_phase4_baseline_vs_exog_benchmark.ipynb` with fixed model variants and expanding-window one-step evaluation.
+The Phase 4 benchmark productionizes `notebooks/t5yie_phase4_baseline_vs_exog_benchmark.ipynb` with fixed model variants and expanding-window one-step evaluation. The default command now uses the daily aligned dataset.
 
 Inputs:
-- `data/targets/model_dataset_t5yie.parquet`
-- `data/splits/time_splits.json`
+- `data/targets/model_dataset_t5yie_daily.parquet`
+- `data/splits/time_splits_daily.json`
 
 Command:
 - `python -m models.baselines.sarimax`
@@ -238,8 +267,12 @@ Default model setup:
 - order `(1, 0, 0)`, trend `"c"`, min train observations `36`
 - variants:
   - `baseline_univariate` (no exogenous features)
-  - `exog_minimal_counts` (`hawkish_score`, `novelty`, `doc_count`)
-  - `exog_share_variant` (`hawkish_score`, `novelty`, `hawkish_share`, `dovish_share`)
+  - `exog_daily_7d` (`hawkish_score_mean_7d`, `novelty_mean_7d`, `doc_count_7d`)
+  - `exog_daily_14d` (`hawkish_score_mean_14d`, `novelty_mean_14d`, `doc_count_14d`)
+  - `exog_daily_30d` (`hawkish_score_mean_30d`, `novelty_mean_30d`, `doc_count_30d`)
+  - `exog_daily_30d_event` (30-day mean/sum/max/sentence/doc-count features)
+  - `exog_daily_multi_window` (all 7/14/30-day communication-window features)
+- implementation note: real statsmodels runs fit once per variant/split and append observations without refitting, so daily all-variant runs complete in minutes instead of refitting every forecast date.
 
 Versioned run artifacts:
 - `data/models/baselines/t5yie/<run_version>/predictions.parquet`
@@ -333,8 +366,8 @@ python -m fedtext.targets.pipeline --series-id T5YIE --transform diff1
 # 8. Build SQLite DB for TS + text-feature EDA (notebook-ready)
 python scripts/build_targets_eda_db.py
 
-# 9. Build monthly model dataset + fixed time splits (versioned)
-python -m datasets.build_dataset.builder
+# 9. Build daily model dataset + fixed time splits for SARIMAX (versioned)
+python -m datasets.build_dataset.daily_builder
 
 # 10. Run Phase 4 SARIMAX baseline vs exogenous benchmark (versioned run artifacts)
 python -m models.baselines.sarimax

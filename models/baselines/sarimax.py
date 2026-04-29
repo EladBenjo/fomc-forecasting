@@ -29,15 +29,48 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 TARGET_COLUMN = "t5yie_diff1"
 DATE_COLUMN = "date"
+BASELINE_VARIANT = "baseline_univariate"
+
+DAILY_COMM_WINDOWS: tuple[int, ...] = (7, 14, 30)
+
+
+def _daily_comm_columns(window_days: int) -> list[str]:
+    return [
+        f"hawkish_score_mean_{window_days}d",
+        f"novelty_mean_{window_days}d",
+        f"doc_count_{window_days}d",
+    ]
+
+
+def _daily_event_columns(window_days: int) -> list[str]:
+    return [
+        f"hawkish_score_mean_{window_days}d",
+        f"hawkish_score_sum_{window_days}d",
+        f"hawkish_score_max_abs_signed_{window_days}d",
+        f"novelty_mean_{window_days}d",
+        f"n_target_sentences_sum_{window_days}d",
+        f"doc_count_{window_days}d",
+    ]
+
+
+def _daily_multi_window_columns() -> list[str]:
+    return [
+        col
+        for window_days in DAILY_COMM_WINDOWS
+        for col in _daily_event_columns(window_days)
+    ]
 
 MODEL_VARIANTS: dict[str, list[str]] = {
-    "baseline_univariate": [],
-    "exog_minimal_counts": ["hawkish_score", "novelty", "doc_count"],
-    "exog_share_variant": ["hawkish_score", "novelty", "hawkish_share", "dovish_share"],
+    BASELINE_VARIANT: [],
+    "exog_daily_7d": _daily_comm_columns(7),
+    "exog_daily_14d": _daily_comm_columns(14),
+    "exog_daily_30d": _daily_comm_columns(30),
+    "exog_daily_30d_event": _daily_event_columns(30),
+    "exog_daily_multi_window": _daily_multi_window_columns(),
 }
 
-DEFAULT_DATASET_PATH = REPO_ROOT / "data" / "targets" / "model_dataset_t5yie.parquet"
-DEFAULT_SPLITS_PATH = REPO_ROOT / "data" / "splits" / "time_splits.json"
+DEFAULT_DATASET_PATH = REPO_ROOT / "data" / "targets" / "model_dataset_t5yie_daily.parquet"
+DEFAULT_SPLITS_PATH = REPO_ROOT / "data" / "splits" / "time_splits_daily.json"
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "data" / "models" / "baselines" / "t5yie"
 
 
@@ -120,16 +153,16 @@ def _load_benchmark_frame(dataset_path: Path, target_column: str) -> pd.DataFram
     required = {
         DATE_COLUMN,
         target_column,
-        "hawkish_score",
-        "novelty",
-        "n_hawkish",
-        "n_dovish",
-        "n_target_sentences",
-        "doc_count",
     }
+    for exog_cols in MODEL_VARIANTS.values():
+        required.update(exog_cols)
+
     missing = required.difference(df.columns)
     if missing:
-        raise ValueError(f"Model dataset missing required columns: {sorted(missing)}")
+        raise ValueError(
+            "Model dataset missing required columns for configured variants: "
+            f"{sorted(missing)}. Rebuild dataset with: python -m datasets.build_dataset.daily_builder"
+        )
 
     out = df.copy()
     out[DATE_COLUMN] = pd.to_datetime(out[DATE_COLUMN], errors="coerce").dt.normalize()
@@ -139,16 +172,6 @@ def _load_benchmark_frame(dataset_path: Path, target_column: str) -> pd.DataFram
     if not out[DATE_COLUMN].is_unique:
         raise ValueError("Model dataset date index must be unique.")
 
-    out["hawkish_share"] = np.where(
-        out["n_target_sentences"] > 0,
-        out["n_hawkish"] / out["n_target_sentences"],
-        np.nan,
-    )
-    out["dovish_share"] = np.where(
-        out["n_target_sentences"] > 0,
-        out["n_dovish"] / out["n_target_sentences"],
-        np.nan,
-    )
     return out
 
 
@@ -156,9 +179,10 @@ def _build_paired_comparison(
     all_predictions: dict[tuple[str, str], pd.DataFrame],
 ) -> pd.DataFrame:
     paired_rows: list[dict[str, float | int | str]] = []
-    for exog_variant in ["exog_minimal_counts", "exog_share_variant"]:
+    exog_variants = sorted(variant for variant in MODEL_VARIANTS if variant != BASELINE_VARIANT)
+    for exog_variant in exog_variants:
         for split_name in ["val", "test"]:
-            base_pred = all_predictions[("baseline_univariate", split_name)]
+            base_pred = all_predictions[(BASELINE_VARIANT, split_name)]
             exog_pred = all_predictions[(exog_variant, split_name)]
 
             common_dates = sorted(set(base_pred["date"]) & set(exog_pred["date"]))
@@ -456,13 +480,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--dataset-path",
         type=str,
         default=None,
-        help="Path to model dataset parquet (default: data/targets/model_dataset_t5yie.parquet).",
+        help="Path to model dataset parquet (default: data/targets/model_dataset_t5yie_daily.parquet).",
     )
     parser.add_argument(
         "--split-path",
         type=str,
         default=None,
-        help="Path to split artifact json (default: data/splits/time_splits.json).",
+        help="Path to split artifact json (default: data/splits/time_splits_daily.json).",
     )
     parser.add_argument(
         "--output-root",
@@ -571,4 +595,3 @@ if __name__ == "__main__":
 
 
 __all__ = ["SarimaxBenchmarkConfig", "run_phase4_benchmark", "main"]
-

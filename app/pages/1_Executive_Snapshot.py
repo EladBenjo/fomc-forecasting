@@ -9,6 +9,7 @@ from app.lib.cached_data import (
     get_artifact_freshness,
     get_features_frame,
     get_latest_phase4_payload,
+    get_latest_xgboost_payload,
     get_model_dataset_frame,
     get_optional_metadata_frame,
     get_status_snapshot,
@@ -17,6 +18,26 @@ from app.lib.dashboard_metrics import recent_events_table, recent_window_snapsho
 
 st.title("Executive Snapshot")
 st.caption("Fast overview of current Communication Signal, Policy Tone, and forecast availability.")
+
+
+def _render_latest_forecast(label: str, payload, remediation_command: str) -> None:
+    st.caption(label)
+    if payload is None:
+        st.warning("No completed forecasting run found.")
+        st.code(remediation_command)
+        return
+
+    preds = payload["predictions"]
+    if preds.empty:
+        st.warning("Predictions artifact is empty.")
+        return
+
+    latest_pred = preds.sort_values("date", kind="mergesort").iloc[-1]
+    st.metric("Latest Forecast Date", str(latest_pred["date"].date()))
+    st.metric("Latest Model Prediction", f"{float(latest_pred['pred']):.3f}")
+    st.caption(f"Model variant: `{latest_pred['model_variant']}`")
+    st.caption(f"Run: `{payload['run_version']}`")
+
 
 commands = remediation_commands()
 status = get_status_snapshot()
@@ -70,20 +91,11 @@ with left:
 
 with right:
     st.subheader("Latest Forecast")
-    phase4_payload = get_latest_phase4_payload()
-    if phase4_payload is None:
-        st.warning("No completed forecasting run found.")
-        st.code(commands["phase4"])
-    else:
-        preds = phase4_payload["predictions"]
-        if preds.empty:
-            st.warning("Predictions artifact is empty.")
-        else:
-            latest_pred = preds.sort_values("date", kind="mergesort").iloc[-1]
-            st.metric("Latest Forecast Date", str(latest_pred["date"].date()))
-            st.metric("Latest Model Prediction", f"{float(latest_pred['pred']):.3f}")
-            st.caption(f"Model variant: `{latest_pred['model_variant']}`")
-            st.caption(f"Run: `{phase4_payload['run_version']}`")
+    forecast_cols = st.columns(2)
+    with forecast_cols[0]:
+        _render_latest_forecast("SARIMAX", get_latest_phase4_payload(), commands["phase4"])
+    with forecast_cols[1]:
+        _render_latest_forecast("XGBoost", get_latest_xgboost_payload(), commands["xgboost"])
 
 st.subheader("Policy Tone and Recent Event")
 lookback_days = st.slider("Trailing window (days)", min_value=30, max_value=365, value=90, step=15)

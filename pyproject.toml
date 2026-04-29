@@ -13,6 +13,7 @@ dependencies = [
     "pandas>=2.2",
     "requests>=2.31",
     "scikit-learn>=1.4",
+    "xgboost>=2.0",
     "pyarrow>=23.0",
     "statsmodels>=0.14",
     "streamlit>=1.39",

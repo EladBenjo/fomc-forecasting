@@ -65,7 +65,15 @@ def build_trailing_exogenous_features(
     rows: list[dict[str, object]] = []
     cols: list[str] = []
 
-    for t in pd.to_datetime(target_dates).normalize():
+    normalized_dates = pd.to_datetime(target_dates, errors="coerce")
+    if isinstance(normalized_dates, pd.Series):
+        normalized_dates = normalized_dates.dt.normalize()
+    else:
+        normalized_dates = normalized_dates.normalize()
+
+    for t in normalized_dates:
+        if pd.isna(t):
+            continue
         row: dict[str, object] = {target_date_col: t}
         cutoff = t - pd.Timedelta(days=lag_days)
         for w in windows:

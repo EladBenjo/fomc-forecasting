@@ -45,5 +45,5 @@
 - **Modify/keep for experimentation**: keep this generic builder for controlled experiments and tune config recipes.
 - Next steps:
   1. Run generic builder locally to generate `model_dataset_t5yie_generic.parquet` and split/manifest artifacts.
-  2. Reuse existing XGBoost and SARIMAX runners on the new dataset.
+  2. Add a compatible model-runner feature schema or adapter before running SARIMAX/XGBoost on the generic output.
   3. Compare RMSE/MAE/directional accuracy against latest existing runs and decide promote/iterate/discard.

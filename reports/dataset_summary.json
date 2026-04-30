@@ -1,0 +1,24 @@
+{
+  "date_max": "2026-03-01",
+  "date_min": "2003-01-01",
+  "missingness_rate": {
+    "doc_count": 0.05017921146953405,
+    "hawkish_score": 0.05017921146953405,
+    "hawkish_score_max_abs_signed_14d": 0.1863799283154122,
+    "hawkish_score_max_abs_signed_30d": 0.05017921146953405,
+    "hawkish_score_max_abs_signed_7d": 0.3763440860215054,
+    "n_dovish": 0.05017921146953405,
+    "n_hawkish": 0.05017921146953405,
+    "n_neutral": 0.05017921146953405,
+    "n_target_sentences": 0.05017921146953405,
+    "novelty": 0.05017921146953405,
+    "role_share_chairman": 0.15770609318996415,
+    "text_length_words_max": 0.05017921146953405
+  },
+  "rows": 279,
+  "split_counts": {
+    "test": 63,
+    "train": 168,
+    "val": 48
+  }
+}

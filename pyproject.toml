@@ -15,9 +15,20 @@ dependencies = [
     "scikit-learn>=1.4",
     "xgboost>=2.0",
     "pyarrow>=23.0",
+    "PyYAML>=6.0",
     "statsmodels>=0.14",
     "streamlit>=1.39",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+norecursedirs = [
+    ".git",
+    ".pytest_cache",
+    ".pytest-tmp",
+    "build",
+    "pytest_tmp_run",
+    "reports/tmp_*",
+]

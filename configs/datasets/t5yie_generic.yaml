@@ -1,0 +1,30 @@
+target:
+  path: data/targets/t5yie_diff1.parquet
+  value_column: t5yie_diff1
+  date_column: date
+  frequency: D
+  forecast_horizon: 1
+features:
+  target_lags: [1,2,5,10,20]
+  target_rolling_windows: [5,10,20]
+  momentum_pairs: [[1,5]]
+  communication_lag_days: 0
+  exogenous_tables:
+    - path: data/features/doc_level/features.parquet
+      date_column: date
+      feature_columns: [hawkish_score, novelty, n_hawkish, n_dovish, n_neutral, n_target_sentences, target_sentences_ratio]
+      windows: [7,14,30]
+      aggregations: [mean, sum, max, last, count]
+      missingness_indicators: true
+splits:
+  train_end: '2016-12-31'
+  val_start: '2017-01-01'
+  val_end: '2020-12-31'
+  test_start: '2021-01-01'
+outputs:
+  dataset_path: data/targets/model_dataset_t5yie_generic.parquet
+  split_path: data/splits/time_splits_t5yie_generic.json
+  manifest_out_dir: data/targets
+  registry_path: data/targets/model_dataset_registry.sqlite3
+cutoff_policy: target_date_minus_lag_days
+no_lookahead_policy: strict_trailing_windows

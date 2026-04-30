@@ -24,6 +24,8 @@ ENV/
 
 # Tool caches
 .pytest_cache/
+.pytest-tmp/
+pytest_tmp_run/
 .mypy_cache/
 .ruff_cache/
 .tox/
@@ -44,6 +46,7 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
+CON
 
 # Local env / secrets
 .env
@@ -52,6 +55,7 @@ Thumbs.db
 
 # Logs
 *.log
+reports/tmp_*/
 
 # Data artifacts (keep placeholders)
 data/

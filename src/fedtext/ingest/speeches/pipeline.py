@@ -43,7 +43,7 @@ def run(
 
     if not discovery_only:
         logger.info("=== FETCH ===")
-        fetch.run(conn, limit=limit)
+        fetch.run(conn, limit=limit, start_year=start_year, end_year=end_year)
 
     conn.close()
     logger.info("Done.")
